@@ -191,6 +191,15 @@ type DiscoveredGroupStatus struct {
 	NodeCount int32 `json:"nodeCount,omitempty"`
 	// +optional
 	ChildRefName string `json:"childRefName,omitempty"`
+	// heuristic is true when this group's provider classification is a
+	// best-effort guess rather than a confident signal (e.g. a node with an
+	// AWS providerID but no EKS node-group label could be a self-managed
+	// ASG or a manually kubeadm-joined instance on AWS hardware). Review
+	// groups with heuristic=true and consider the
+	// upgrade.k8s-upgrade-operator/provider-override annotation if the
+	// guessed provider is wrong for your environment.
+	// +optional
+	Heuristic bool `json:"heuristic,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -54,10 +54,10 @@ func ListControlPlaneNodes(ctx context.Context, c client.Client) ([]corev1.Node,
 
 // ControlPlaneHealth summarizes a point-in-time proxy health check.
 type ControlPlaneHealth struct {
-	Healthy 	bool
+	Healthy    bool
 	TotalNodes int
 	ReadyNodes int
-	Reason  	string
+	Reason     string
 }
 
 // CheckControlPlaneHealth reports whether a majority of control-plane nodes
@@ -85,7 +85,7 @@ func CheckControlPlaneHealth(ctx context.Context, c client.Client) (ControlPlane
 		TotalNodes: total,
 		ReadyNodes: ready,
 	}
-	
+
 	if total == 0 {
 		health.Healthy = true
 		health.Reason = "no control-plane nodes found (managed control plane, or labels missing)"

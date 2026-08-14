@@ -42,7 +42,7 @@ spec:
               defaults:
                 description: |-
                   defaults are cluster-wide fallbacks inherited by every discovered
-                  NodeGroupUpgrade child unless overriden per-group.
+                  NodeGroupUpgrade child unless overridden per-group.
                 properties:
                   batchSize:
                     format: int32
@@ -270,6 +270,16 @@ spec:
                   properties:
                     childRefName:
                       type: string
+                    heuristic:
+                      description: |-
+                        heuristic is true when this group's provider classification is a
+                        best-effort guess rather than a confident signal (e.g. a node with an
+                        AWS providerID but no EKS node-group label could be a self-managed
+                        ASG or a manually kubeadm-joined instance on AWS hardware). Review
+                        groups with heuristic=true and consider the
+                        upgrade.k8s-upgrade-operator/provider-override annotation if the
+                        guessed provider is wrong for your environment.
+                      type: boolean
                     name:
                       type: string
                     nodeCount:
