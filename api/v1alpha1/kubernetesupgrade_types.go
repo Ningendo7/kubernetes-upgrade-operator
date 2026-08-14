@@ -43,7 +43,7 @@ type KubernetesUpgradeSpec struct {
 	Scope *UpgradeScope `json:"scope,omitempty"`
 
 	// defaults are cluster-wide fallbacks inherited by every discovered
-	// NodeGroupUpgrade child unless overriden per-group.
+	// NodeGroupUpgrade child unless overridden per-group.
 	// +optional
 	Defaults *UpgradeDefaults `json:"defaults,omitempty"`
 
