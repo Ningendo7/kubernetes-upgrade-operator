@@ -1,4 +1,5 @@
 ## Append samples of your project ##
 resources:
 - upgrade_v1alpha1_kubernetesupgrade.yaml
+- upgrade_v1alpha1_nodegroupupgrade.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

@@ -18,4 +18,13 @@ resources:
   kind: KubernetesUpgrade
   path: github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1
   version: v1alpha1
+- api:
+    crdVersion: v1
+    namespaced: true
+  controller: true
+  domain: k8s-upgrade-operator
+  group: upgrade
+  kind: NodeGroupUpgrade
+  path: github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1
+  version: v1alpha1
 version: "3"

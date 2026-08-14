@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/upgrade.k8s-upgrade-operator_kubernetesupgrades.yaml
+- bases/upgrade.k8s-upgrade-operator_nodegroupupgrades.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

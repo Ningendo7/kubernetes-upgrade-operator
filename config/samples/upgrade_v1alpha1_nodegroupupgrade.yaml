@@ -1,0 +1,9 @@
+apiVersion: upgrade.k8s-upgrade-operator/v1alpha1
+kind: NodeGroupUpgrade
+metadata:
+  labels:
+    app.kubernetes.io/name: kubernetes-upgrade-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: nodegroupupgrade-sample
+spec:
+  # TODO(user): Add fields here

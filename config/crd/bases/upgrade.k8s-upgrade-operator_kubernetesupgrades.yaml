@@ -1,0 +1,361 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: kubernetesupgrades.upgrade.k8s-upgrade-operator
+spec:
+  group: upgrade.k8s-upgrade-operator
+  names:
+    kind: KubernetesUpgrade
+    listKind: KubernetesUpgradeList
+    plural: kubernetesupgrades
+    singular: kubernetesupgrade
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: KubernetesUpgrade is the Schema for the kubernetesupgrades API
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: spec defines the desired state of KubernetesUpgrade
+            properties:
+              defaults:
+                description: |-
+                  defaults are cluster-wide fallbacks inherited by every discovered
+                  NodeGroupUpgrade child unless overriden per-group.
+                properties:
+                  batchSize:
+                    format: int32
+                    type: integer
+                  drainTimeoutSeconds:
+                    format: int32
+                    type: integer
+                  forceDrainAfterTimeout:
+                    type: boolean
+                  maxUnavailable:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    x-kubernetes-int-or-string: true
+                  nodeReadyTimeoutSeconds:
+                    format: int32
+                    type: integer
+                type: object
+              groupOverrides:
+                description: |-
+                  groupOverrides lets you tweak a specific *discovered* node group
+                  (matched by groupName) without hand-authoring the whole child object.
+                items:
+                  description: NodeGroupOverride overrides discovery-computed settings
+                    for one named node group.
+                  properties:
+                    batchSize:
+                      format: int32
+                      type: integer
+                    groupName:
+                      description: groupName must match a group name produced by discovery.
+                      type: string
+                    maxUnavailable:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      x-kubernetes-int-or-string: true
+                    pause:
+                      description: pause halts only this group, leaving others to
+                        proceed.
+                      type: boolean
+                    skip:
+                      description: skip excludes this group from the current upgrade
+                        run entirely.
+                      type: boolean
+                    strategy:
+                      description: NodeGroupStrategy is how nodes in this group get
+                        upgraded.
+                      enum:
+                      - InPlace
+                      - Replace
+                      type: string
+                  required:
+                  - groupName
+                  type: object
+                type: array
+              paused:
+                default: false
+                description: paused halts all reconciliation for this upgrade when
+                  true.
+                type: boolean
+              safety:
+                description: safety holds cluster-wide guardrails for the upgrade.
+                properties:
+                  allowDowngrade:
+                    default: false
+                    description: allowDowngrade permits targetVersion to be lower
+                      than the cluster's current version.
+                    type: boolean
+                  controlPlaneHealthTimeoutSeconds:
+                    format: int32
+                    type: integer
+                  requireEtcdQuorum:
+                    default: true
+                    description: requireEtcdQuorum gates control-plane node upgrades
+                      on a quorum/health check.
+                    type: boolean
+                type: object
+              scope:
+                description: |-
+                  scope narrows which nodes are considered part of this upgrade.
+                  A nil scope means "every node in the cluster".
+                properties:
+                  nodeSelector:
+                    description: nodeSelector limits which nodes are in scope. Nil
+                      selects all nodes.
+                    properties:
+                      matchExpressions:
+                        description: matchExpressions is a list of label selector
+                          requirements. The requirements are ANDed.
+                        items:
+                          description: |-
+                            A label selector requirement is a selector that contains values, a key, and an operator that
+                            relates the key and values.
+                          properties:
+                            key:
+                              description: key is the label key that the selector
+                                applies to.
+                              type: string
+                            operator:
+                              description: |-
+                                operator represents a key's relationship to a set of values.
+                                Valid operators are In, NotIn, Exists and DoesNotExist.
+                              type: string
+                            values:
+                              description: |-
+                                values is an array of string values. If the operator is In or NotIn,
+                                the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                the values array must be empty. This array is replaced during a strategic
+                                merge patch.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
+                          required:
+                          - key
+                          - operator
+                          type: object
+                        type: array
+                        x-kubernetes-list-type: atomic
+                      matchLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                          map is equivalent to an element of matchExpressions, whose key field is "key", the
+                          operator is "In", and the values array contains only "value". The requirements are ANDed.
+                        type: object
+                    type: object
+                    x-kubernetes-map-type: atomic
+                type: object
+              targetVersion:
+                description: targetVersion is the Kubernetes version to upgrade the
+                  cluster to, e.g. "v1.30.4".
+                pattern: ^v?\d+\.\d+\.\d+.*$
+                type: string
+            required:
+            - targetVersion
+            type: object
+          status:
+            description: status defines the observed state of KubernetesUpgrade
+            properties:
+              conditions:
+                description: conditions represent the current state of the KubernetesUpgrade
+                  resource.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              controlPlane:
+                description: ControlPlaneUpgradeStatus summarizes control-plane node
+                  progress.
+                properties:
+                  currentNode:
+                    type: string
+                  totalNodes:
+                    format: int32
+                    type: integer
+                  upgradedNodes:
+                    format: int32
+                    type: integer
+                  version:
+                    type: string
+                type: object
+              currentStepIndex:
+                type: integer
+              discoveredGroups:
+                items:
+                  description: DiscoveredGroupStatus is a rollup of one discovered
+                    NodeGroupUpgrade child.
+                  properties:
+                    childRefName:
+                      type: string
+                    name:
+                      type: string
+                    nodeCount:
+                      format: int32
+                      type: integer
+                    phase:
+                      type: string
+                    provider:
+                      description: ProviderType identifies which provider adapter
+                        manages this group's nodes.
+                      enum:
+                      - Kubeadm
+                      - AWSEKSManagedNodeGroup
+                      - AWSAutoScalingGroup
+                      - LinodeLKE
+                      - Generic
+                      type: string
+                    role:
+                      description: NodeGroupRole says whether this group is control-plane
+                        or worker nodes.
+                      enum:
+                      - ControlPlane
+                      - Worker
+                      type: string
+                    strategy:
+                      description: NodeGroupStrategy is how nodes in this group get
+                        upgraded.
+                      enum:
+                      - InPlace
+                      - Replace
+                      type: string
+                  required:
+                  - name
+                  - provider
+                  - role
+                  - strategy
+                  type: object
+                type: array
+              message:
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              phase:
+                description: KubernetesUpgradePhase is the current phase of the top-level
+                  state machine.
+                enum:
+                - Pending
+                - Discovering
+                - Prechecks
+                - ControlPlaneUpgrade
+                - WorkersUpgrade
+                - Postchecks
+                - Complete
+                - Failed
+                - Paused
+                type: string
+              startingVersion:
+                description: startingVersion is captured once, at first reconcile,
+                  as the baseline for stepPlan.
+                type: string
+              stepPlan:
+                description: |-
+                  stepPlan is the computed sequence of single-minor-version hops needed to
+                  reach targetVersion, persisted for idempotency/resumability.
+                items:
+                  description: UpgradeStep is one single-minor-version hop in the
+                    overall upgrade.
+                  properties:
+                    completedAt:
+                      format: date-time
+                      type: string
+                    fromVersion:
+                      type: string
+                    toVersion:
+                      type: string
+                  required:
+                  - fromVersion
+                  - toVersion
+                  type: object
+                type: array
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

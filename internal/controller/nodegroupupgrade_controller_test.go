@@ -30,7 +30,7 @@ import (
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
 )
 
-var _ = Describe("KubernetesUpgrade Controller", func() {
+var _ = Describe("NodeGroupUpgrade Controller", func() {
 	Context("When reconciling a resource", func() {
 		const (
 			resourceName      = "test-resource"
@@ -43,19 +43,22 @@ var _ = Describe("KubernetesUpgrade Controller", func() {
 			Name:      resourceName,
 			Namespace: resourceNamespace,
 		}
-		kubernetesupgrade := &upgradev1alpha1.KubernetesUpgrade{}
+		nodegroupupgrade := &upgradev1alpha1.NodeGroupUpgrade{}
 
 		BeforeEach(func() {
-			By("creating the custom resource for the Kind KubernetesUpgrade")
-			err := k8sClient.Get(ctx, typeNamespacedName, kubernetesupgrade)
+			By("creating the custom resource for the Kind NodeGroupUpgrade")
+			err := k8sClient.Get(ctx, typeNamespacedName, nodegroupupgrade)
 			if err != nil && errors.IsNotFound(err) {
-				resource := &upgradev1alpha1.KubernetesUpgrade{
+				resource := &upgradev1alpha1.NodeGroupUpgrade{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					Spec: upgradev1alpha1.KubernetesUpgradeSpec{
+					Spec: upgradev1alpha1.NodeGroupUpgradeSpec{
 						TargetVersion: "v1.29.0",
+						Role:          upgradev1alpha1.RoleWorker,
+						Provider:      upgradev1alpha1.ProviderKubeadm,
+						Strategy:      upgradev1alpha1.StrategyInPlace,
 					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
@@ -64,16 +67,16 @@ var _ = Describe("KubernetesUpgrade Controller", func() {
 
 		AfterEach(func() {
 			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &upgradev1alpha1.KubernetesUpgrade{}
+			resource := &upgradev1alpha1.NodeGroupUpgrade{}
 			err := k8sClient.Get(ctx, typeNamespacedName, resource)
 			Expect(err).NotTo(HaveOccurred())
 
-			By("Cleanup the specific resource instance KubernetesUpgrade")
+			By("Cleanup the specific resource instance NodeGroupUpgrade")
 			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			controllerReconciler := &KubernetesUpgradeReconciler{
+			controllerReconciler := &NodeGroupUpgradeReconciler{
 				Client: k8sClient,
 				Scheme: k8sClient.Scheme(),
 			}
