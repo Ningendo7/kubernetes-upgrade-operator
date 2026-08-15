@@ -1,1 +1,95 @@
-kubernetes-upgrade-operatorA production-focused Kubernetes Operator for orchestrating safe, resumable Kubernetes upgrades across control plane and worker nodes. Designed with provider-neutral CRDs and a pluggable adapter architecture so you can start with kubeadm and evolve toward cloud-managed upgrades (e.g., EKS managed node groups / node pools) without breaking the API contract.GoalsSafety first: upgrade ordering, health gates,and PDB-aware workload handling.Idempotent & resumable: upgradesprogress is tracked in status soreconciliation can recover from failures.Provider-neutral CRDs: the API describesdesired behavior and strategy, notimplementation details like “kubeadm” or“EKS”.Pluggable backends:Start with kubeadm (self-managedcontrol plane + workers).Add cloud adapters later (EKS nodegroups / node pools).Support “node pools” as logical pools(label/taint selectors) and map themto real cloud node groups over time.Operational clarity: detailed statusconditions, events, and progress phases.Non-goals (for early versions)Automatic fully-automated rollback ofcontrol plane upgrades in all configurations.Replacing or duplicating your cluster’s fullupgrade lifecycle tooling.“Best-effort chaos upgrades” (this operatoris conservative by design).High-level architectureComponentsAPI (CRDs via kubebuilder)UpgradePlan (provider-neutral)Optional future CRDs: NodeUpgrade /UpgradeStep if you need finer-grained progress tracking.Controller (reconciler)Implements a state machine:Pending → Prechecks →ControlPlaneUpgrade →WorkersUpgrade →Postchecks → CompleteUpdates status.conditions andstatus.phase.Workset / scope moduleComputes which nodes are in-scopebased on:default “whole cluster”optional node pool selectorsApplies batching limits(nodeBatchSize, maxUnavailable,etc.)Provider adapter layerController depends on a stableinterface.Backends implement the interface:kubeadm adapter noweks adapter laterShared Kubernetes utilitiesDrain/cordon and eviction (with PDBhandling)Node readiness checksPod health / daemonset readinesschecks (as needed)Compatibility and version parsinghelpersSupported upgrade concepts1) Whole-cluster upgrades (initial UX)You define:target Kubernetes versionstrategy (batching, maxunavailable/unavailable tolerance)timeouts and health gatesoptional logical node pool selectors (future-friendly)The operator determines the workset (nodes to touch) internally.2) Control plane upgrade orderingTypical strategy:Upgrade control plane first.Verify apiserver health and clusterreadiness.Then upgrade workers in controlled batches.3) Worker upgradesTwo key behaviors:PDB-aware draining when evicting podsSequential or batched node progression toreduce riskRepository structure (proposed)This layout keeps your kubebuilder controller thin and isolates upgrade logic into reusable packages.CRD: UpgradePlan (conceptual spec)The goal is to keep the CRD provider-neutral and stable.Recommended design principlesDescribe desired behavior (target version,strategy, safety gates).Keep provider mechanics out of top-levelfields.Use status.conditions as your “contract”for progress reporting.Example (illustrative YAML)Note: Exact field names will depend on your final schema—this README describes the intended architecture and stability strategy.Adapter interface (conceptual)Define a stable interface so the controller doesn’t change when you add new backends.Key responsibilities for an adapter:Prechecks: verify cluster and preconditionsControl plane upgrade (or explicitly no-op ifprovider handles it)Workers upgrade based on workset +strategyVerification hooks: ensure nodes/cluster areat the expected target stateUpgrade state machine (controller phases)Suggested phases and what they mean:PendingCR exists; controller hasn’t started.PrechecksValidate target version compatibilityVerify health (apiserver, nodes, systempods)ControlPlaneUpgradeUpgrade control plane componentsValidate after each control-planemember (HA) if applicableWorkersUpgradeDrain + upgrade workers in batchesVerify each batch (readiness + health)PostchecksConfirm cluster stability and thatworkloads are runningCompleteMark status.conditions satisfiedFailedMark failure reason; do not proceedfurtherHealth gates and verification (practical baseline)For production-grade safety, plan to verify:Control plane readinessKubernetes endpoints healthycore components running and readycluster-wide “Ready” conditions stable for awindowWorker readiness per node or per batchNode transitions back to ReadyCritical DaemonSets healthy (CNI/CSI) (asapplicable)Workloads maintain availability as permittedby PDBsNode pools and scope modelLogical node pools (start here)Initially, treat “node pools” as:label selectors (and possibly taint/labelcombinations)group nodes into a workset forbatching/drain constraintsFuture mapping to real cloud poolsWhen you add EKS:your logical node pool definition can map to:EKS managed node groupsnode groups selected by tagsthe same workset concept stays provider-neutral in the CRD.This is the reason to include “scope/workset” concepts early.kubeadm upgrade workflow (what the adapter should do)A kubeadm adapter typically needs a reliable execution mechanism. You can implement one of:SSHSSM (cloud-managed command execution)DaemonSet agent (recommended forKubernetes-native operation)Worker node upgrade (expected steps)Identify nodeCordon nodeDrain using eviction honoring PDBsUpgrade kubeadm/kubelet and restartservices as requiredWait for node readinessUncordon (after verification)Control plane upgrade (expected steps)Upgrade one member at a time in HA setupsVerify etcd quorum and apiserver healthRotate certificates if needed (depending onyour kubeadm workflow)Continue sequentially(Exact steps vary with your cluster’s kubeadm init/join/config.)EKS adapter (future direction)When you implement EKS:The backend will call EKS APIs to updatenode group versions.The operator verifies Kubernetes sees theexpected kubelet versions and nodereadiness.Worker upgrade pacing is controlled by thesame strategy knobs (batch size, maxunavailable), but enforcement will rely onprovider rollout behavior plus Kubernetesverification.InstallationLocal developmentUse kubebuilder-generated manifests:Deploying into a clusterEnsure CRDs are installedDeploy controller + RBACApply UpgradePlan CR and watch statusUsageApply an UpgradePlanWatch:kubectl get upgradeplan <name>kubectl describe upgradeplan <name>events emitted by the controllerWhen complete, validate:control plane and workers versionsworkload availabilityObservability and debuggingRecommended operational signals:Controller logs per phase and per node(where applicable)status.conditions with:machine-readable condition typeshuman-readable messageKubernetes Events on the UpgradePlanobjectTesting strategyUnit testsworkset computation and batching logicPDB-aware drain logic (mock client)version compatibility parsingIntegration testsenvtest with controller-runtime for reconcilepathsadapter unit tests with mocked cluster +mocked executor outputsEnd-to-end tests (later)kind/minikube for simple drain behaviormore realistic kubeadm cluster for realupgrade flowsRoadmapMVPCRD + kubebuilder operatorUpgradePlan reconcile state machinekubeadm adapter:precheckssingle control-plane upgrade (orlimited HA)worker drain + kubelet upgrade (singlenode batch support)status.conditions correctnessv0.2+HA control plane supportbetter retry/backoff and robustidempotencyPDB-heavy test caseslogical node pool selectorsv1.0 (platform-ready)EKS adaptermapping logical pools to EKS node groupsproduction-grade verification improvementsclearer upgrade safety reports
+# kubernetes-upgrade-operator
+
+A production-focused Kubernetes operator for orchestrating safe, resumable cluster upgrades — across on-prem/bare-metal kubeadm clusters, AWS (EKS-managed node groups and self-managed Auto Scaling Groups), Linode LKE, and any other infrastructure via a generic fallback. One CR, `spec.targetVersion`, is usually all a user needs to provide: the operator discovers the rest from live cluster state.
+
+## Goals
+
+- **Safety first.** Control-plane nodes are upgraded one at a time with a health gate before proceeding; worker drains are PDB-aware and pause (rather than force-evict) when blocked; a stuck or failed upgrade halts and waits for a human, it never auto-rolls-back.
+- **Small, declarative CRs.** You shouldn't have to hand-enumerate every node pool. The operator inspects `Node` objects (`providerID`, well-known labels) to classify nodes into logical groups, infer their provider, and pick a sensible default upgrade strategy — with explicit overrides available when the defaults are wrong for your environment.
+- **One operator, two upgrade mechanisms.** `InPlace` (run `kubeadm upgrade` / restart kubelet directly on the host — for bare-metal nodes that can't just be replaced) and `Replace` (cordon/drain/delete, let cloud infrastructure recreate — for managed node pools and immutable instances), dispatched per node group.
+- **Idempotent and resumable.** Progress lives in `status`, not in memory — a controller restart or a requeued reconcile picks up exactly where it left off.
+- **No hidden multi-minor jumps.** Kubernetes only supports upgrading one minor version at a time. A request to go from, say, `v1.27` to `v1.30` is automatically decomposed into three sequential single-minor hops, applied to the whole fleet one hop at a time (never some nodes on `v1.30` while others sit on `v1.27`).
+
+## Non-goals
+
+- Fully automated rollback of a failed or partial upgrade.
+- Replacing your cluster's broader lifecycle tooling (backups, cert rotation, etc.).
+- "Best-effort" upgrades that race ahead without health checks — this operator is deliberately conservative.
+
+## Architecture
+
+Two CRDs, two controllers, one provider-adapter interface:
+
+- **`KubernetesUpgrade`** (namespaced) — the resource a user creates. Holds `spec.targetVersion` plus optional escape hatches (`scope`, `defaults`, `groupOverrides`, `safety`). Drives a top-level state machine:
+
+  ```
+  Pending → Discovering → Prechecks → ControlPlaneUpgrade → WorkersUpgrade → Postchecks → Complete
+                                                                                          ↘ Failed / Paused
+  ```
+
+  This loops once per single-minor-version hop in `status.stepPlan` when the target is more than one minor version ahead.
+
+- **`NodeGroupUpgrade`** (namespaced, owned by a `KubernetesUpgrade`) — one per discovered node group; control-plane nodes always collapse into their own group regardless of provider. State machine:
+
+  ```
+  Pending → Draining → Upgrading → Verifying → Complete
+                                              ↘ Failed / Paused
+  ```
+
+  batched by `maxUnavailable`/`batchSize`, never touching more nodes at once than the group's resolved concurrency limit.
+
+- **`pkg/provider.Adapter`** — the interface implemented per provider (`kubeadm`, `generic`, `awseks`, `awsasg`, `linodelke`), dispatched by the `NodeGroupUpgrade` controller based on the group's classified `Provider`. The `InPlace` path (kubeadm and generic) executes host-level upgrades via a privileged per-node Job that `nsenter`s into the host's PID 1 namespaces — the controller has no SSH access to nodes, and a real `chroot` isn't enough to restart the host's `kubelet` via `systemctl`.
+
+### Discovery: how the CR stays small
+
+On every reconcile, `pkg/upgrade.DiscoverGroups` lists `Node`s and classifies each one:
+
+1. An explicit `upgrade.k8s-upgrade-operator/provider-override` annotation wins outright, for cases the heuristics below get wrong.
+2. Otherwise, `providerID` prefix + well-known labels decide it: `aws:///...` + `eks.amazonaws.com/nodegroup` → EKS-managed; bare `aws:///...` → self-managed ASG (flagged low-confidence — see below); `linode://...` + `lke.linode.com/pool-id` → LKE; empty `providerID` → Kubeadm (the on-prem/bare-metal default); anything else → Generic.
+3. Nodes are grouped by `(role, provider, group-identity)` — control-plane nodes always form one `control-plane` group; workers group by their provider's pool identity, falling back to a single `workers` group.
+4. Each group's `NodeGroupUpgrade` child is reconciled via Server-Side Apply with a dedicated field manager, so the controller's computed defaults stay in sync with cluster reality without clobbering fields a human has hand-edited on the child directly.
+
+Some classifications are inherently ambiguous — e.g. a bare `aws:///` `providerID` with no EKS label could be a real self-managed ASG, or just a plain EC2 instance manually `kubeadm join`ed with the AWS cloud-provider integration enabled. Groups discovered this way are marked `heuristic: true` in `status.discoveredGroups`, so it's visible before the operator picks a (possibly wrong, possibly destructive) default strategy for them. Fix it with the override annotation.
+
+### Safety mechanics
+
+- Control-plane group is hard-pinned to `batchSize=1`, never user-configurable, and strategy is hard-pinned to `InPlace` regardless of any override (replacing a control-plane node risks etcd membership/quorum in ways this operator doesn't manage).
+- Before moving to the next control-plane node, a proxy health check requires a majority of control-plane `Node`s to be `Ready` (real `etcdctl`-based quorum checking needs privileged access this operator doesn't have yet — see Roadmap).
+- Draining is PDB-aware via the real Kubernetes eviction API; a drain blocked by a PodDisruptionBudget pauses and retries rather than force-evicting, unless `drain.force` is explicitly set.
+- A `coordination.k8s.io` Lease prevents two `KubernetesUpgrade`s from running concurrently cluster-wide.
+- Failures set `Phase=Failed`/`Paused` and stop — there is no automatic rollback of already-upgraded nodes.
+
+## Provider support
+
+| Provider | Strategy default | Status |
+|---|---|---|
+| Kubeadm (on-prem / bare-metal) | `InPlace` | Implemented |
+| Generic (unrecognized infrastructure) | `InPlace` | Implemented |
+| AWS EKS-managed node group | `Replace` (not overridable) | Interface-conformant, not yet implemented |
+| AWS self-managed Auto Scaling Group | `Replace` (overridable to `InPlace`) | Interface-conformant, not yet implemented |
+| Linode LKE node pool | `Replace` (not overridable) | Interface-conformant, not yet implemented |
+
+## Development
+
+Standard kubebuilder v4 workflow:
+
+```sh
+make manifests generate   # regenerate CRD YAML + deepcopy after editing api/v1alpha1
+make test                 # fmt, vet, manifests, generate, then unit + envtest suites
+make lint                 # golangci-lint, matches CI
+make run                  # run the manager against your current kubeconfig
+```
+
+## Status
+
+This project is under active development. Current progress:
+
+- [x] `KubernetesUpgrade` and `NodeGroupUpgrade` API types
+- [x] `pkg/k8sutil` — cordon/uncordon, PDB-aware drain, node readiness/version checks, control-plane proxy health check
+- [x] `pkg/upgrade` — node discovery/classification, multi-minor step-plan computation, batching, strategy resolution
+- [x] `pkg/provider` — adapter interface and registry
+- [ ] `pkg/provider/kubeadm` and `pkg/provider/generic` real implementations
+- [ ] `pkg/provider/{awseks,awsasg,linodelke}` stub implementations
+- [ ] `KubernetesUpgrade` and `NodeGroupUpgrade` controllers (state machines)
+- [ ] Validating webhook
+- [ ] End-to-end testing against a real kubeadm cluster
