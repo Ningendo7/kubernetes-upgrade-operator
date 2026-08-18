@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"k8s.io/client-go/tools/record"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
@@ -41,6 +42,7 @@ type NodeGroupUpgradeReconciler struct {
 	// Adapters is injectable so tests can register fake adapters,
 	// completely isolated from provider.DefaultRegistry.
 	Adapters *provider.Registry
+	Recorder record.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=upgrade.k8s-upgrade-operator,resources=nodegroupupgrades,verbs=get;list;watch;create;update;patch;delete
@@ -80,6 +82,12 @@ func (r *NodeGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	switch ng.Status.Phase {
 	case "", upgradev1alpha1.NGPending:
 		return r.reconcilePending(ctx, &ng)
+	case upgradev1alpha1.NGDraining:
+		return r.reconcileDraining(ctx, &ng)
+	case upgradev1alpha1.NGUpgrading:
+		return r.reconcileUpgrading(ctx, &ng)
+	case upgradev1alpha1.NGVerifying:
+		return r.reconcileVerifying(ctx, &ng)
 	case upgradev1alpha1.NGComplete, upgradev1alpha1.NGFailed, upgradev1alpha1.NGPaused:
 		return ctrl.Result{}, nil
 	default:
