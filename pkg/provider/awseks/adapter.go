@@ -30,7 +30,7 @@ import (
 // and poll its status; until then, every method reports
 // provider.ErrNotImplemented so the NodeGroupUpgrade controller can
 // distinguish "not built yet" from a genuine runtime failure.
-type Adapter struct {}
+type Adapter struct{}
 
 func init() {
 	provider.DefaultRegistry.Register(&Adapter{})

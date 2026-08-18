@@ -67,8 +67,8 @@ func isStrategyAllowedForProvider(p upgradev1alpha1.ProviderType, s upgradev1alp
 // ExistingChild is the minimal view of an existing NodeGroupUpgrade needed
 // to decide whether it's safe to prune.
 type ExistingChild struct {
-	Name      string
-	Phase	 upgradev1alpha1.NodeGroupUpgradePhase
+	Name  string
+	Phase upgradev1alpha1.NodeGroupUpgradePhase
 }
 
 // PruneCandidates returns the names of existing NodeGroupUpgrade children
@@ -97,9 +97,9 @@ func PruneCandidates(desired []DiscoveredGroup, existing []ExistingChild) []stri
 
 func isSafeToPrune(phase upgradev1alpha1.NodeGroupUpgradePhase) bool {
 	switch phase {
-		case "", upgradev1alpha1.NGPending, upgradev1alpha1.NGComplete:
-			return true
-		default:
-			return false
+	case "", upgradev1alpha1.NGPending, upgradev1alpha1.NGComplete:
+		return true
+	default:
+		return false
 	}
 }

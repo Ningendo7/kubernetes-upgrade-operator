@@ -224,11 +224,6 @@ func (in *KubernetesUpgradeStatus) DeepCopyInto(out *KubernetesUpgradeStatus) {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
 	}
-	if in.CurrentStepIndex != nil {
-		in, out := &in.CurrentStepIndex, &out.CurrentStepIndex
-		*out = new(int)
-		**out = **in
-	}
 	out.ControlPlane = in.ControlPlane
 	if in.DiscoveredGroups != nil {
 		in, out := &in.DiscoveredGroups, &out.DiscoveredGroups

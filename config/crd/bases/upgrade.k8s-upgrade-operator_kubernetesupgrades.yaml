@@ -262,6 +262,7 @@ spec:
                     type: string
                 type: object
               currentStepIndex:
+                format: int32
                 type: integer
               discoveredGroups:
                 items:

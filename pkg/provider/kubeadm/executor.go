@@ -25,7 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-var(
+var (
 	// ExecutorImage is the container image carrying the kubeadm/kubelet
 	// upgrade script. Configurable via SetExecutorImage (cmd/main.go wires
 	// this from an env var/flag once the image exists).
@@ -54,8 +54,8 @@ const (
 	// the manager's broader Kubernetes API permissions.
 	executorServiceAccount = "kubernetes-upgrade-operator-executor"
 
-	nodeNameLabel 	= "upgrade.k8s-upgrade-operator/node"
-	targetVerLabel 	= "upgrade.k8s-upgrade-operator/target-version"
+	nodeNameLabel  = "upgrade.k8s-upgrade-operator/node"
+	targetVerLabel = "upgrade.k8s-upgrade-operator/target-version"
 )
 
 // jobNameFor deterministically names the executor Job for a given node and
@@ -91,12 +91,12 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 			Name:      jobNameFor(nodeName, targetVersion),
 			Namespace: ExecutorNamespace,
 			Labels: map[string]string{
-				nodeNameLabel: nodeName,
+				nodeNameLabel:  nodeName,
 				targetVerLabel: sanitizeLabelValue(targetVersion),
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoffLimit,
+			BackoffLimit:            &backoffLimit,
 			TTLSecondsAfterFinished: &ttl,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
@@ -111,7 +111,7 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 					// bypasses the scheduler entirely, so this Job can still
 					// land on a node that's already been cordoned.
 					NodeName: nodeName,
-					HostPID: true,
+					HostPID:  true,
 					// Guards against a NoExecute taint (e.g. a health
 					// condition) evicting this Job mid-run; NodeName
 					// bypasses the scheduler but the kubelet's taint
@@ -123,10 +123,10 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 					},
 					Containers: []corev1.Container{
 						{
-							Name:	 "kubeadm-upgrade",
-							Image:	 ExecutorImage,
-							Command:  []string{"/bin/sh", "-c"},
-							Args:	 []string{script},
+							Name:    "kubeadm-upgrade",
+							Image:   ExecutorImage,
+							Command: []string{"/bin/sh", "-c"},
+							Args:    []string{script},
 							Env: []corev1.EnvVar{
 								{
 									Name:  "TARGET_VERSION",

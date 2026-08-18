@@ -31,8 +31,10 @@ const (
 	// classification when the automatic heuristics are ambiguous or wrong.
 	ProviderOverrideAnnotation = "upgrade.k8s-upgrade-operator/provider-override"
 
-	// controlPlaneGroupName is the fixed group name for all control-plane nodes.
-	controlPlaneGroupName = "control-plane"
+	// ControlPlaneGroupName is the fixed group name for all control-plane
+	// nodes, exported so the KubernetesUpgrade controller can look up this
+	// specific well-known child by name.
+	ControlPlaneGroupName = "control-plane"
 	// defaultWorkerGroupName is used when worker nodes can't be distinguished
 	// into more specific pools.
 	defaultWorkerGroupName = "workers"

@@ -98,15 +98,15 @@ func (a *Adapter) PollBatch(ctx context.Context, uc provider.UpgradeContext, bat
 	for _, node := range batch {
 		var job batchv1.Job
 		key := client.ObjectKey{
-			Namespace:	ExecutorNamespace,
-			Name:		jobNameFor(node.Name, uc.TargetVersion),
+			Namespace: ExecutorNamespace,
+			Name:      jobNameFor(node.Name, uc.TargetVersion),
 		}
 		if err := uc.Client.Get(ctx, key, &job); err != nil {
 			if apierrors.IsNotFound(err) {
 				results = append(results, provider.NodeResult{
 					NodeName: node.Name,
-					Phase:	 provider.NodePhaseFailed,
-					Error:	fmt.Errorf("upgrade job for node %q not found", node.Name),
+					Phase:    provider.NodePhaseFailed,
+					Error:    fmt.Errorf("upgrade job for node %q not found", node.Name),
 				})
 				continue
 			}

@@ -149,7 +149,7 @@ type KubernetesUpgradeStatus struct {
 	// +optional
 	StepPlan []UpgradeStep `json:"stepPlan,omitempty"`
 	// +optional
-	CurrentStepIndex *int `json:"currentStepIndex,omitempty"`
+	CurrentStepIndex int32 `json:"currentStepIndex,omitempty"`
 
 	// +optional
 	ControlPlane ControlPlaneUpgradeStatus `json:"controlPlane,omitempty"`

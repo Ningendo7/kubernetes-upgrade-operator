@@ -14,14 +14,21 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package provider
+package controller
 
-import "errors"
+import (
+	"context"
 
-// ErrNotImplemented should be returned by Precheck (or any other method)
-// of an adapter that doesn't have a real implementation yet for its
-// provider. The NodeGroupUpgrade controller treats this distinctly from a
-// genuine failure: it stays Pending with an Event rather than moving to
-// Failed, since "not implemented yet" is an operator/deployment concern,
-// not something retrying will fix.
-var ErrNotImplemented = errors.New("provider adapter not yet implemented")
+	ctrl "sigs.k8s.io/controller-runtime"
+
+	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
+)
+
+func (r *KubernetesUpgradeReconciler) reconcilePending(ctx context.Context, ku *upgradev1alpha1.KubernetesUpgrade) (ctrl.Result, error) {
+	ku.Status.Phase = upgradev1alpha1.PhaseDiscovering
+	ku.Status.ObservedGeneration = ku.Generation
+	if err := r.Status().Update(ctx, ku); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{Requeue: true}, nil
+}

@@ -23,7 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-func int32ptr(v int32) *int32                          { return &v }
+func int32ptr(v int32) *int32                                 { return &v }
 func ptrIntOrString(v intstr.IntOrString) *intstr.IntOrString { return &v }
 
 func TestResolveConcurrency(t *testing.T) {

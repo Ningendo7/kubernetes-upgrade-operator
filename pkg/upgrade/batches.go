@@ -34,14 +34,14 @@ func ResolveConcurrency(total int, batchSize *int32, maxUnavailable *intstr.IntO
 
 	limit := 1
 	switch {
-	case batchSize != nil && *batchSize >0:
+	case batchSize != nil && *batchSize > 0:
 		limit = int(*batchSize)
-	case maxUnavailable != nil :
+	case maxUnavailable != nil:
 		v, err := intstr.GetScaledValueFromIntOrPercent(maxUnavailable, total, false)
 		if err != nil {
 			return 0, fmt.Errorf("resolving maxUnavailable: %w", err)
 		}
-		limit =v
+		limit = v
 	}
 
 	if limit < 1 {

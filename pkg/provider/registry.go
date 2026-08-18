@@ -25,7 +25,7 @@ import (
 // Registry holds provider adapters keyed by their ProviderType. Construct
 // one with NewRegistry; the zero value is not usable.
 type Registry struct {
-	mu      sync.RWMutex
+	mu       sync.RWMutex
 	adapters map[upgradev1alpha1.ProviderType]Adapter
 }
 

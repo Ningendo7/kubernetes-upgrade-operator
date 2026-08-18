@@ -29,7 +29,7 @@ type fakeAdapter struct {
 	providerType upgradev1alpha1.ProviderType
 }
 
-func (f fakeAdapter) Type() upgradev1alpha1.ProviderType { return f.providerType }
+func (f fakeAdapter) Type() upgradev1alpha1.ProviderType                        { return f.providerType }
 func (f fakeAdapter) SupportsStrategy(_ upgradev1alpha1.NodeGroupStrategy) bool { return true }
 func (f fakeAdapter) Precheck(_ context.Context, _ UpgradeContext) (bool, string, error) {
 	return true, "", nil

@@ -29,10 +29,10 @@ import (
 // UpgradeContext carries the shared, non-node-specific inputs an adapter
 // needs to act on a NodeGroupUpgrade.
 type UpgradeContext struct {
-	Client		client.Client
-	Log		logr.Logger
-	Group		*upgradev1alpha1.NodeGroupUpgrade
-	TargetVersion	string
+	Client        client.Client
+	Log           logr.Logger
+	Group         *upgradev1alpha1.NodeGroupUpgrade
+	TargetVersion string
 }
 
 // NodePhase is a single node's progress within an adapter's batch

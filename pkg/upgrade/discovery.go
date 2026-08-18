@@ -160,7 +160,7 @@ func isKnownProvider(p upgradev1alpha1.ProviderType) bool {
 
 func groupName(role upgradev1alpha1.NodeGroupRole, provider upgradev1alpha1.ProviderType, node *corev1.Node) string {
 	if role == upgradev1alpha1.RoleControlPlane {
-		return controlPlaneGroupName
+		return ControlPlaneGroupName
 	}
 	switch provider {
 	case upgradev1alpha1.ProviderAWSEKSManagedNodeGroup:
