@@ -18,75 +18,86 @@ package controller
 
 import (
 	"context"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
 )
 
 var _ = Describe("NodeGroupUpgrade Controller", func() {
-	Context("When reconciling a resource", func() {
+	Context("When a group has one node that is already healthy at the target version", func() {
 		const (
-			resourceName      = "test-resource"
-			resourceNamespace = "default"
+			nodeName  = "envtest-worker-1"
+			groupName = "test-group"
+			namespace = "default"
+			toVersion = "v1.30.0"
 		)
 
 		ctx := context.Background()
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: resourceNamespace,
-		}
-		nodegroupupgrade := &upgradev1alpha1.NodeGroupUpgrade{}
-
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind NodeGroupUpgrade")
-			err := k8sClient.Get(ctx, typeNamespacedName, nodegroupupgrade)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &upgradev1alpha1.NodeGroupUpgrade{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: resourceNamespace,
-					},
-					Spec: upgradev1alpha1.NodeGroupUpgradeSpec{
-						TargetVersion: "v1.29.0",
-						Role:          upgradev1alpha1.RoleWorker,
-						Provider:      upgradev1alpha1.ProviderKubeadm,
-						Strategy:      upgradev1alpha1.StrategyInPlace,
-					},
-				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
+		It("drains, upgrades (via the fake adapter), verifies, and completes", func() {
+			By("creating a synthetic Node already reporting the target version")
+			node := &corev1.Node{
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName},
 			}
-		})
+			Expect(k8sClient.Create(ctx, node)).To(Succeed())
 
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &upgradev1alpha1.NodeGroupUpgrade{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance NodeGroupUpgrade")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &NodeGroupUpgradeReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
+			node.Status = corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{
+					{Type: corev1.NodeReady, Status: corev1.ConditionTrue},
+				},
+				NodeInfo: corev1.NodeSystemInfo{KubeletVersion: toVersion},
 			}
+			Expect(k8sClient.Status().Update(ctx, node)).To(Succeed())
 
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
+			DeferCleanup(func() {
+				Expect(k8sClient.Delete(ctx, node)).To(Succeed())
 			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			By("creating a NodeGroupUpgrade for that node")
+			group := &upgradev1alpha1.NodeGroupUpgrade{
+				ObjectMeta: metav1.ObjectMeta{Name: groupName, Namespace: namespace},
+				Spec: upgradev1alpha1.NodeGroupUpgradeSpec{
+					TargetVersion: toVersion,
+					Role:          upgradev1alpha1.RoleWorker,
+					Provider:      upgradev1alpha1.ProviderKubeadm,
+					Strategy:      upgradev1alpha1.StrategyInPlace,
+					Nodes:         []string{nodeName},
+				},
+			}
+			Expect(k8sClient.Create(ctx, group)).To(Succeed())
+
+			DeferCleanup(func() {
+				Expect(k8sClient.Delete(ctx, group)).To(Succeed())
+			})
+
+			key := types.NamespacedName{Name: groupName, Namespace: namespace}
+
+			By("waiting for the group to reach Complete")
+			Eventually(func() upgradev1alpha1.NodeGroupUpgradePhase {
+				var got upgradev1alpha1.NodeGroupUpgrade
+				if err := k8sClient.Get(ctx, key, &got); err != nil {
+					return ""
+				}
+				return got.Status.Phase
+			}, 30*time.Second, 250*time.Millisecond).Should(Equal(upgradev1alpha1.NGComplete))
+
+			var final upgradev1alpha1.NodeGroupUpgrade
+			Expect(k8sClient.Get(ctx, key, &final)).To(Succeed())
+			Expect(final.Status.UpgradedNodes).To(Equal(int32(1)))
+			Expect(final.Status.NodeProgress).To(HaveLen(1))
+			Expect(final.Status.NodeProgress[0].CompletedAt).NotTo(BeNil())
+
+			By("confirming the node was uncordoned again")
+			var finalNode corev1.Node
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: nodeName}, &finalNode)).To(Succeed())
+			Expect(finalNode.Spec.Unschedulable).To(BeFalse())
 		})
 	})
 })

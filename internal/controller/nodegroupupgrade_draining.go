@@ -46,7 +46,7 @@ func (r *NodeGroupUpgradeReconciler) reconcileDraining(ctx context.Context, ng *
 			ng.Status.Phase = upgradev1alpha1.NGComplete
 			return ctrl.Result{}, r.Status().Update(ctx, ng)
 		}
-		
+
 		now := metav1.Now()
 		for _, name := range next {
 			idx := findNodeProgress(ng.Status.NodeProgress, name)
@@ -81,7 +81,7 @@ func (r *NodeGroupUpgradeReconciler) reconcileDraining(ctx context.Context, ng *
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("draining node %q: %w", name, err)
 		}
-		
+
 		if result.Remaining == 0 {
 			if idx := findNodeProgress(ng.Status.NodeProgress, name); idx != -1 {
 				ng.Status.NodeProgress[idx].Phase = "Drained"
@@ -144,7 +144,7 @@ func (r *NodeGroupUpgradeReconciler) handleStuckDrain(ctx context.Context, ng *u
 				Name:      b.Name,
 			},
 		}
-		if err := r.Client.Delete(ctx, &pod); err != nil && !apierrors.IsNotFound(err){
+		if err := r.Client.Delete(ctx, &pod); err != nil && !apierrors.IsNotFound(err) {
 			return fmt.Errorf("force-deleting pod %s/%s: %w", b.Namespace, b.Name, err)
 		}
 	}
@@ -180,7 +180,7 @@ func nextBatchFor(ng *upgradev1alpha1.NodeGroupUpgrade) ([]string, error) {
 		case np.StartedAt != nil:
 			inProgress[np.Name] = true
 		}
-	}	
+	}
 	return upgrade.NextBatch(ng.Spec.Nodes, done, inProgress, ng.Spec.BatchSize, ng.Spec.MaxUnavailable)
 }
 

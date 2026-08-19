@@ -6,4 +6,9 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: kubernetesupgrade-sample
 spec:
-  # TODO(user): Add fields here
+  # targetVersion is usually the only field you need to set - node groups,
+  # their provider, and their upgrade strategy are discovered automatically.
+  # See the README for the discovery mechanism and the escape hatches
+  # (spec.groupOverrides, the upgrade.k8s-upgrade-operator/provider-override
+  # annotation) for when the defaults don't fit your environment.
+  targetVersion: "v1.30.0"

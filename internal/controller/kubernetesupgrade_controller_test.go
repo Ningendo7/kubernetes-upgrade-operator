@@ -18,72 +18,130 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/discovery"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/upgrade"
 )
 
 var _ = Describe("KubernetesUpgrade Controller", func() {
-	Context("When reconciling a resource", func() {
-		const (
-			resourceName      = "test-resource"
-			resourceNamespace = "default"
-		)
+	Context("When discovering node groups across different providers", func() {
+		const namespace = "default"
 
 		ctx := context.Background()
 
-		typeNamespacedName := types.NamespacedName{
-			Name:      resourceName,
-			Namespace: resourceNamespace,
-		}
-		kubernetesupgrade := &upgradev1alpha1.KubernetesUpgrade{}
+		It("classifies nodes and creates one NodeGroupUpgrade child per discovered group", func() {
+			// Compute a valid, one-minor-ahead target relative to the real
+			// envtest apiserver's own reported version, so this test
+			// doesn't silently break if the pinned envtest version changes.
+			discoveryClient, err := discovery.NewDiscoveryClientForConfig(cfg)
+			Expect(err).NotTo(HaveOccurred())
+			serverVersion, err := discoveryClient.ServerVersion()
+			Expect(err).NotTo(HaveOccurred())
+			current, err := k8sutil.ParseVersion(serverVersion.GitVersion)
+			Expect(err).NotTo(HaveOccurred())
+			targetVersion := fmt.Sprintf("v%d.%d.0", int64(current.Major()), int64(current.Minor())+1)
 
-		BeforeEach(func() {
-			By("creating the custom resource for the Kind KubernetesUpgrade")
-			err := k8sClient.Get(ctx, typeNamespacedName, kubernetesupgrade)
-			if err != nil && errors.IsNotFound(err) {
-				resource := &upgradev1alpha1.KubernetesUpgrade{
+			readyStatus := corev1.NodeStatus{
+				Conditions: []corev1.NodeCondition{{Type: corev1.NodeReady, Status: corev1.ConditionTrue}},
+				NodeInfo:   corev1.NodeSystemInfo{KubeletVersion: serverVersion.GitVersion},
+			}
+
+			nodes := []*corev1.Node{
+				{
+					// Empty providerID + control-plane label -> Kubeadm, ControlPlane.
 					ObjectMeta: metav1.ObjectMeta{
-						Name:      resourceName,
-						Namespace: resourceNamespace,
+						Name:   "discovery-cp-1",
+						Labels: map[string]string{k8sutil.ControlPlaneLabelKey: ""},
 					},
-					Spec: upgradev1alpha1.KubernetesUpgradeSpec{
-						TargetVersion: "v1.29.0",
+				},
+				{
+					// Empty providerID, no labels -> Kubeadm, Worker, group "workers".
+					ObjectMeta: metav1.ObjectMeta{Name: "discovery-worker-1"},
+				},
+				{
+					// AWS providerID + EKS nodegroup label -> AWSEKSManagedNodeGroup, group "ng-1".
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   "discovery-eks-1",
+						Labels: map[string]string{upgrade.EKSNodeGroupLabel: "ng-1"},
 					},
+					Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-0123456789abcdef0"},
+				},
+			}
+
+			for _, n := range nodes {
+				Expect(k8sClient.Create(ctx, n)).To(Succeed())
+				n.Status = readyStatus
+				Expect(k8sClient.Status().Update(ctx, n)).To(Succeed())
+			}
+			DeferCleanup(func() {
+				for _, n := range nodes {
+					Expect(k8sClient.Delete(ctx, n)).To(Succeed())
 				}
-				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
-			}
-		})
-
-		AfterEach(func() {
-			// TODO(user): Cleanup logic after each test, like removing the resource instance.
-			resource := &upgradev1alpha1.KubernetesUpgrade{}
-			err := k8sClient.Get(ctx, typeNamespacedName, resource)
-			Expect(err).NotTo(HaveOccurred())
-
-			By("Cleanup the specific resource instance KubernetesUpgrade")
-			Expect(k8sClient.Delete(ctx, resource)).To(Succeed())
-		})
-		It("should successfully reconcile the resource", func() {
-			By("Reconciling the created resource")
-			controllerReconciler := &KubernetesUpgradeReconciler{
-				Client: k8sClient,
-				Scheme: k8sClient.Scheme(),
-			}
-
-			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
-				NamespacedName: typeNamespacedName,
 			})
-			Expect(err).NotTo(HaveOccurred())
-			// TODO(user): Add more specific assertions depending on your controller's reconciliation logic.
-			// Example: If you expect a certain status condition after reconciliation, verify it here.
+
+			ku := &upgradev1alpha1.KubernetesUpgrade{
+				ObjectMeta: metav1.ObjectMeta{Name: "discovery-test", Namespace: namespace},
+				Spec:       upgradev1alpha1.KubernetesUpgradeSpec{TargetVersion: targetVersion},
+			}
+			Expect(k8sClient.Create(ctx, ku)).To(Succeed())
+			DeferCleanup(func() {
+				Expect(k8sClient.Delete(ctx, ku)).To(Succeed())
+			})
+
+			key := types.NamespacedName{Name: ku.Name, Namespace: namespace}
+
+			By("waiting for discovery to populate status.discoveredGroups")
+			Eventually(func() int {
+				var got upgradev1alpha1.KubernetesUpgrade
+				if err := k8sClient.Get(ctx, key, &got); err != nil {
+					return 0
+				}
+				return len(got.Status.DiscoveredGroups)
+			}, 30*time.Second, 250*time.Millisecond).Should(Equal(3))
+
+			var final upgradev1alpha1.KubernetesUpgrade
+			Expect(k8sClient.Get(ctx, key, &final)).To(Succeed())
+
+			byName := map[string]upgradev1alpha1.DiscoveredGroupStatus{}
+			for _, g := range final.Status.DiscoveredGroups {
+				byName[g.Name] = g
+			}
+
+			cp, ok := byName["control-plane"]
+			Expect(ok).To(BeTrue(), "expected a control-plane group")
+			Expect(cp.Provider).To(Equal(upgradev1alpha1.ProviderKubeadm))
+			Expect(cp.Role).To(Equal(upgradev1alpha1.RoleControlPlane))
+			Expect(cp.Strategy).To(Equal(upgradev1alpha1.StrategyInPlace))
+
+			workers, ok := byName["workers"]
+			Expect(ok).To(BeTrue(), "expected a workers group")
+			Expect(workers.Provider).To(Equal(upgradev1alpha1.ProviderKubeadm))
+			Expect(workers.Strategy).To(Equal(upgradev1alpha1.StrategyInPlace))
+
+			eks, ok := byName["ng-1"]
+			Expect(ok).To(BeTrue(), "expected an ng-1 group")
+			Expect(eks.Provider).To(Equal(upgradev1alpha1.ProviderAWSEKSManagedNodeGroup))
+			Expect(eks.Strategy).To(Equal(upgradev1alpha1.StrategyReplace))
+
+			By("confirming a matching NodeGroupUpgrade child exists for each group")
+			var children upgradev1alpha1.NodeGroupUpgradeList
+			Expect(k8sClient.List(ctx, &children,
+				client.InNamespace(namespace),
+				client.MatchingLabels{parentLabelKey: ku.Name},
+			)).To(Succeed())
+			Expect(children.Items).To(HaveLen(3))
 		})
 	})
 })

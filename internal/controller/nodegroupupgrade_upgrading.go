@@ -48,10 +48,10 @@ func (r *NodeGroupUpgradeReconciler) reconcileUpgrading(ctx context.Context, ng 
 	}
 
 	uc := provider.UpgradeContext{
-		Client:		r.Client,
-		Log:       	log,
-		Group:     	ng,
-		TargetVersion: 	ng.Spec.TargetVersion,
+		Client:        r.Client,
+		Log:           log,
+		Group:         ng,
+		TargetVersion: ng.Spec.TargetVersion,
 	}
 
 	ready, reason, err := adapter.Precheck(ctx, uc)

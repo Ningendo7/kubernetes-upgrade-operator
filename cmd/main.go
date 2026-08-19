@@ -27,6 +27,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/discovery"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -37,6 +38,13 @@ import (
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/internal/controller"
+	webhookv1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/internal/webhook/v1alpha1"
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider"
+	_ "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider/awsasg"
+	_ "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider/awseks"
+	_ "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider/generic"
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider/kubeadm"
+	_ "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider/linodelke"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -44,6 +52,8 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
 )
+
+const defaultOperatorNamespace = "kubernetes-upgrade-operator-system"
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -178,19 +188,45 @@ func main() {
 		os.Exit(1)
 	}
 
+	discoveryClient, err := discovery.NewDiscoveryClientForConfig(mgr.GetConfig())
+	if err != nil {
+		setupLog.Error(err, "Failed to create discovery client")
+		os.Exit(1)
+	}
+
+	operatorNamespace := os.Getenv("POD_NAMESPACE")
+	if operatorNamespace == "" {
+		operatorNamespace = defaultOperatorNamespace
+	}
+	kubeadm.SetExecutorNamespace(operatorNamespace)
+	if executorImage := os.Getenv("EXECUTOR_IMAGE"); executorImage != "" {
+		kubeadm.SetExecutorImage(executorImage)
+	}
+
 	if err := (&controller.KubernetesUpgradeReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:            mgr.GetClient(),
+		Scheme:            mgr.GetScheme(),
+		DiscoveryClient:   discoveryClient,
+		OperatorNamespace: operatorNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "kubernetesupgrade")
 		os.Exit(1)
 	}
 	if err := (&controller.NodeGroupUpgradeReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Adapters: provider.DefaultRegistry,
+		Recorder: mgr.GetEventRecorderFor("nodegroupupgrade-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "nodegroupupgrade")
 		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupKubernetesUpgradeWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create webhook", "webhook", "KubernetesUpgrade")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

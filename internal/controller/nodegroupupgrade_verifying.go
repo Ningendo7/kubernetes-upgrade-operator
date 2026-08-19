@@ -68,15 +68,15 @@ func (r *NodeGroupUpgradeReconciler) reconcileVerifying(ctx context.Context, ng 
 	}
 
 	uc := provider.UpgradeContext{
-		Client:		r.Client,
-		Log:		log,
-		Group:		ng,
-		TargetVersion:    ng.Spec.TargetVersion,
+		Client:        r.Client,
+		Log:           log,
+		Group:         ng,
+		TargetVersion: ng.Spec.TargetVersion,
 	}
 
 	verified, reason, err := adapter.Verify(ctx, uc)
 	if err != nil {
-		return r.handleAdapterError(ctx, ng, "Verify",err)
+		return r.handleAdapterError(ctx, ng, "Verify", err)
 	}
 	if !verified {
 		log.Info("adapter verify not satisfied, waiting", "reason", reason)

@@ -88,8 +88,11 @@ This project is under active development. Current progress:
 - [x] `pkg/k8sutil` — cordon/uncordon, PDB-aware drain, node readiness/version checks, control-plane proxy health check
 - [x] `pkg/upgrade` — node discovery/classification, multi-minor step-plan computation, batching, strategy resolution
 - [x] `pkg/provider` — adapter interface and registry
-- [ ] `pkg/provider/kubeadm` and `pkg/provider/generic` real implementations
-- [ ] `pkg/provider/{awseks,awsasg,linodelke}` stub implementations
-- [ ] `KubernetesUpgrade` and `NodeGroupUpgrade` controllers (state machines)
-- [ ] Validating webhook
-- [ ] End-to-end testing against a real kubeadm cluster
+- [x] `pkg/provider/kubeadm` and `pkg/provider/generic` real implementations
+- [x] `pkg/provider/{awseks,awsasg,linodelke}` stub implementations
+- [x] `KubernetesUpgrade` and `NodeGroupUpgrade` controllers (full state machines, wired into `cmd/main.go`)
+- [x] Validating webhook (no-downgrade, hop-count sanity ceiling)
+- [x] envtest integration coverage for both controllers and the webhook
+- [ ] The kubeadm executor container image itself (`pkg/provider/kubeadm/executor.go` builds a Job pointing at `ExecutorImage`, but that image — the pinned `kubeadm`/`kubelet` binaries plus the upgrade script — hasn't been built yet)
+- [ ] End-to-end testing against a real kubeadm cluster (kind has no real kubelets to validate the nsenter host-mutation path against)
+- [ ] `make lint` clean run (deferred to CI — see `.github/workflows/lint.yml`)

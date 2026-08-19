@@ -6,4 +6,14 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: nodegroupupgrade-sample
 spec:
-  # TODO(user): Add fields here
+  # NodeGroupUpgrade objects are normally created and managed by the
+  # KubernetesUpgrade controller's discovery process, not applied directly -
+  # this sample exists mainly to document the shape of the API and for
+  # local experimentation against a test cluster.
+  targetVersion: "v1.30.0"
+  role: Worker
+  provider: Kubeadm
+  strategy: InPlace
+  nodeSelector:
+    matchLabels:
+      node-role.kubernetes.io/worker: ""

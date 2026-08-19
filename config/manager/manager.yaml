@@ -65,6 +65,16 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        env:
+          - name: POD_NAMESPACE
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.namespace
+          # TODO(user): set EXECUTOR_IMAGE once the kubeadm executor image
+          # (pkg/provider/kubeadm's privileged per-node Job container) is
+          # built and published - see pkg/provider/kubeadm/executor.go.
+          # - name: EXECUTOR_IMAGE
+          #   value: "ghcr.io/ningendo7/kubernetes-upgrade-operator-executor:latest"
         ports:
         - containerPort: 8081
           name: health
