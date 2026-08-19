@@ -25,11 +25,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/test/utils"
 )
 
@@ -319,15 +321,138 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+		It("should discover node groups end-to-end without touching the real kind node", func() {
+			// This deliberately never lets the KubernetesUpgrade progress
+			// past Prechecks: kind's real node is the only node in the
+			// cluster (including the one running this very test's pods),
+			// so letting a real Draining/Upgrading phase cordon or evict
+			// anything on it would risk breaking the rest of the e2e
+			// suite. Instead, spec.scope.nodeSelector restricts discovery
+			// to synthetic Node objects that carry a unique test label -
+			// the real kind node is never selected, and the synthetic
+			// nodes never report Ready (nothing runs a real kubelet for
+			// them), so Prechecks' node-health gate holds indefinitely.
+			// That still exercises discovery/classification, child
+			// creation, and RBAC/CRD schema for real, against a real
+			// deployed operator and apiserver.
+			const testName = "e2e-discovery-test"
+			const scopeLabelKey = "upgrade.k8s-upgrade-operator/e2e-test"
+
+			By("determining the cluster's current Kubernetes version")
+			cmd := exec.Command("kubectl", "get", "--raw", "/version")
+			versionOutput, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+
+			var versionInfo struct {
+				GitVersion string `json:"gitVersion"`
+			}
+			Expect(json.Unmarshal([]byte(versionOutput), &versionInfo)).To(Succeed())
+
+			current, err := k8sutil.ParseVersion(versionInfo.GitVersion)
+			Expect(err).NotTo(HaveOccurred())
+			targetVersion := fmt.Sprintf("v%d.%d.0", int64(current.Major()), int64(current.Minor())+1)
+
+			By("creating synthetic Nodes scoped out of the real kind node")
+			eksNodeManifest := fmt.Sprintf(`
+apiVersion: v1
+kind: Node
+metadata:
+  name: e2e-fake-eks-worker
+  labels:
+    %s: "true"
+    eks.amazonaws.com/nodegroup: ng-1
+spec:
+  providerID: aws:///us-east-1a/i-0e2efakeinstance01
+`, scopeLabelKey)
+			kubeadmNodeManifest := fmt.Sprintf(`
+apiVersion: v1
+kind: Node
+metadata:
+  name: e2e-fake-kubeadm-worker
+  labels:
+    %s: "true"
+`, scopeLabelKey)
+
+			for _, manifest := range []string{eksNodeManifest, kubeadmNodeManifest} {
+				cmd := exec.Command("kubectl", "apply", "-f", "-")
+				cmd.Stdin = strings.NewReader(manifest)
+				_, err := utils.Run(cmd)
+				Expect(err).NotTo(HaveOccurred())
+			}
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "node",
+					"e2e-fake-eks-worker", "e2e-fake-kubeadm-worker", "--ignore-not-found"))
+			})
+
+			By("creating a KubernetesUpgrade scoped to only the synthetic nodes")
+			kuManifest := fmt.Sprintf(`
+apiVersion: upgrade.k8s-upgrade-operator/v1alpha1
+kind: KubernetesUpgrade
+metadata:
+  name: %s
+  namespace: default
+spec:
+  targetVersion: %q
+  scope:
+    nodeSelector:
+      matchLabels:
+        %s: "true"
+`, testName, targetVersion, scopeLabelKey)
+			cmd = exec.Command("kubectl", "apply", "-f", "-")
+			cmd.Stdin = strings.NewReader(kuManifest)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "kubernetesupgrade", testName, "-n", "default", "--ignore-not-found"))
+			})
+
+			By("waiting for discovery to classify both synthetic nodes into separate groups")
+			type discoveredGroup struct {
+				Name     string `json:"name"`
+				Provider string `json:"provider"`
+				Role     string `json:"role"`
+				Strategy string `json:"strategy"`
+			}
+			var groups []discoveredGroup
+			verifyDiscovered := func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "kubernetesupgrade", testName, "-n", "default",
+					"-o", "jsonpath={.status.discoveredGroups}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).NotTo(BeEmpty())
+				g.Expect(json.Unmarshal([]byte(output), &groups)).To(Succeed())
+				g.Expect(groups).To(HaveLen(2))
+			}
+			Eventually(verifyDiscovered, 2*time.Minute, 2*time.Second).Should(Succeed())
+
+			byName := map[string]discoveredGroup{}
+			for _, gr := range groups {
+				byName[gr.Name] = gr
+			}
+			Expect(byName).To(HaveKey("ng-1"))
+			Expect(byName["ng-1"].Provider).To(Equal("AWSEKSManagedNodeGroup"))
+			Expect(byName["ng-1"].Strategy).To(Equal("Replace"))
+			Expect(byName).To(HaveKey("workers"))
+			Expect(byName["workers"].Provider).To(Equal("Kubeadm"))
+			Expect(byName["workers"].Strategy).To(Equal("InPlace"))
+
+			By("confirming a matching NodeGroupUpgrade child exists for each group")
+			cmd = exec.Command("kubectl", "get", "nodegroupupgrade", "-n", "default",
+				"-l", fmt.Sprintf("upgrade.k8s-upgrade-operator/kubernetesupgrade=%s", testName),
+				"-o", "jsonpath={.items[*].metadata.name}")
+			childOutput, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(strings.Fields(childOutput)).To(HaveLen(2))
+
+			By("confirming the safety gate holds: the upgrade never leaves Prechecks, since the synthetic nodes never report Ready")
+			Consistently(func(g Gomega) {
+				cmd := exec.Command("kubectl", "get", "kubernetesupgrade", testName, "-n", "default",
+					"-o", "jsonpath={.status.phase}")
+				output, err := utils.Run(cmd)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(output).To(BeElementOf("Discovering", "Prechecks"))
+			}, 15*time.Second, 3*time.Second).Should(Succeed())
+		})
 	})
 })
 
