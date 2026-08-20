@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubernetes-upgrade-operator-executor
+  labels:
+    app.kubernetes.io/name: kubernetes-upgrade-operator
+    app.kubernetes.io/managed-by: kustomize
+    app.kubernetes.io/component: executor
+    # This namespace intentionally runs at the "privileged" Pod Security
+    # Standard, unlike every other namespace this operator touches (the
+    # manager's own namespace runs "restricted"). Only the short-lived,
+    # node-pinned executor Jobs (pkg/provider/kubeadm) run here.
+    pod-security.kubernetes.io/enforce: privileged

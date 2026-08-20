@@ -17,8 +17,9 @@ limitations under the License.
 package kubeadm
 
 import (
-	"strings"
 	"testing"
+
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestBuildUpgradeJob_NodeNameSetDirectlyBypassesCordon(t *testing.T) {
@@ -41,35 +42,78 @@ func TestBuildUpgradeJob_Deterministic(t *testing.T) {
 	}
 }
 
-func TestBuildUpgradeJob_PrivilegedHostAccess(t *testing.T) {
+func TestBuildUpgradeJob_HardenedHostAccess(t *testing.T) {
 	job := buildUpgradeJob("worker-1", "v1.30.0", false)
-	container := job.Spec.Template.Spec.Containers[0]
+	pod := job.Spec.Template.Spec
+	container := pod.Containers[0]
 
-	if !job.Spec.Template.Spec.HostPID {
+	if !pod.HostPID {
 		t.Errorf("expected HostPID true (required for nsenter --target 1)")
 	}
-	if container.SecurityContext == nil || container.SecurityContext.Privileged == nil || !*container.SecurityContext.Privileged {
-		t.Errorf("expected container to be privileged")
+	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken {
+		t.Errorf("expected AutomountServiceAccountToken false")
 	}
-	if len(container.VolumeMounts) != 1 || container.VolumeMounts[0].MountPath != "/host" {
-		t.Errorf("expected a single /host volume mount, got %+v", container.VolumeMounts)
+	if pod.ActiveDeadlineSeconds == nil {
+		t.Errorf("expected ActiveDeadlineSeconds to be set")
 	}
-	if job.Spec.Template.Spec.ServiceAccountName != executorServiceAccount {
-		t.Errorf("expected dedicated executor ServiceAccount, got %q", job.Spec.Template.Spec.ServiceAccountName)
+	if pod.ServiceAccountName != executorServiceAccount {
+		t.Errorf("expected dedicated executor ServiceAccount, got %q", pod.ServiceAccountName)
 	}
+
+	sc := container.SecurityContext
+	if sc == nil {
+		t.Fatalf("expected a SecurityContext")
+	}
+	if sc.Privileged != nil && *sc.Privileged {
+		t.Errorf("expected privileged to not be set - capabilities should be narrowed instead")
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("expected AllowPrivilegeEscalation false")
+	}
+	if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Errorf("expected ReadOnlyRootFilesystem true")
+	}
+	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("expected capabilities to drop ALL, got %+v", sc.Capabilities)
+	}
+	if sc.Capabilities == nil || !containsCapability(sc.Capabilities.Add, "SYS_ADMIN") {
+		t.Errorf("expected SYS_ADMIN capability to be added, got %+v", sc.Capabilities)
+	}
+
+	if len(container.VolumeMounts) != 0 {
+		t.Errorf("expected no volume mounts (nsenter needs no host mount), got %+v", container.VolumeMounts)
+	}
+	if len(pod.Volumes) != 0 {
+		t.Errorf("expected no volumes at all, got %+v", pod.Volumes)
+	}
+}
+
+func containsCapability(caps []corev1.Capability, want corev1.Capability) bool {
+	for _, c := range caps {
+		if c == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildUpgradeJob_ApplyVsNodeCommandSelection(t *testing.T) {
 	applyJob := buildUpgradeJob("cp-1", "v1.30.0", true)
 	nodeJob := buildUpgradeJob("cp-2", "v1.30.0", false)
 
-	applyScript := strings.Join(applyJob.Spec.Template.Spec.Containers[0].Args, " ")
-	nodeScript := strings.Join(nodeJob.Spec.Template.Spec.Containers[0].Args, " ")
+	if mode := envValue(applyJob.Spec.Template.Spec.Containers[0], "UPGRADE_MODE"); mode != "apply" {
+		t.Errorf("expected THE first control-plane node's Job  to set UPGRADE_MODE=apply, got: %s", mode)
+	}
+	if mode := envValue(nodeJob.Spec.Template.Spec.Containers[0], "UPGRADE_MODE"); mode != "node" {
+		t.Errorf("expected subsequent nodes' Jobs to set UPGRADE_MODE=node, got: %s", mode)
+	}
+}
 
-	if !strings.Contains(applyScript, "kubeadm upgrade apply") {
-		t.Errorf("expected the first control-plane node's Job to run 'kubeadm upgrade apply', got: %s", applyScript)
+func envValue(container corev1.Container, name string) string {
+	for _, e := range container.Env {
+		if e.Name == name {
+			return e.Value
+		}
 	}
-	if strings.Contains(nodeScript, "kubeadm upgrade apply") || !strings.Contains(nodeScript, "kubeadm upgrade node") {
-		t.Errorf("expected subsequent nodes' Jobs to run 'kubeadm upgrade node', got: %s", nodeScript)
-	}
+	return ""
 }

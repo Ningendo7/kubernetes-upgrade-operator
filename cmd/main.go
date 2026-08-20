@@ -198,7 +198,9 @@ func main() {
 	if operatorNamespace == "" {
 		operatorNamespace = defaultOperatorNamespace
 	}
-	kubeadm.SetExecutorNamespace(operatorNamespace)
+	if executorNamespace := os.Getenv("EXECUTOR_NAMESPACE"); executorNamespace != "" {
+		kubeadm.SetExecutorNamespace(executorNamespace)
+	}
 	if executorImage := os.Getenv("EXECUTOR_IMAGE"); executorImage != "" {
 		kubeadm.SetExecutorImage(executorImage)
 	}

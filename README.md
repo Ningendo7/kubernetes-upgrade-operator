@@ -58,6 +58,7 @@ Some classifications are inherently ambiguous — e.g. a bare `aws:///` `provide
 - Draining is PDB-aware via the real Kubernetes eviction API; a drain blocked by a PodDisruptionBudget pauses and retries rather than force-evicting, unless `drain.force` is explicitly set.
 - A `coordination.k8s.io` Lease prevents two `KubernetesUpgrade`s from running concurrently cluster-wide.
 - Failures set `Phase=Failed`/`Paused` and stop — there is no automatic rollback of already-upgraded nodes.
+- The `InPlace` path's privileged, node-pinned executor Job is this operator's single highest-risk operation, treated accordingly — dedicated namespace at the Pod Security `privileged` tier (everything else runs `restricted`), narrowed capabilities instead of blanket `privileged: true`, zero ServiceAccount permissions, no host filesystem mounts, checksum-verified binary fetches. See **[SECURITY.md](SECURITY.md)** for the full reasoning, including alternatives considered and why they weren't chosen.
 
 ## Provider support
 
@@ -93,6 +94,7 @@ This project is under active development. Current progress:
 - [x] `KubernetesUpgrade` and `NodeGroupUpgrade` controllers (full state machines, wired into `cmd/main.go`)
 - [x] Validating webhook (no-downgrade, hop-count sanity ceiling)
 - [x] envtest integration coverage for both controllers and the webhook
-- [ ] The kubeadm executor container image itself (`pkg/provider/kubeadm/executor.go` builds a Job pointing at `ExecutorImage`, but that image — the pinned `kubeadm`/`kubelet` binaries plus the upgrade script — hasn't been built yet)
+- [x] Kubeadm executor image source (`images/kubeadm-executor/`) — hardened per [SECURITY.md](SECURITY.md)
+- [ ] The executor image actually built and published to a registry, and `ExecutorImage` pinned to its digest (currently a mutable `:latest` tag with nothing behind it yet)
 - [ ] End-to-end testing against a real kubeadm cluster (kind has no real kubelets to validate the nsenter host-mutation path against)
 - [ ] `make lint` clean run (deferred to CI — see `.github/workflows/lint.yml`)

@@ -18,7 +18,6 @@ package kubeadm
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -39,14 +38,20 @@ func newAdapterTestClient(objs ...client.Object) client.Client {
 	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objs...).Build()
 }
 
-func jobScript(t *testing.T, c client.Client, nodeName, targetVersion string) string {
+func jobUpgradeMode(t *testing.T, c client.Client, nodeName, targetVersion string) string {
 	t.Helper()
 	var job batchv1.Job
 	key := client.ObjectKey{Namespace: ExecutorNamespace, Name: jobNameFor(nodeName, targetVersion)}
 	if err := c.Get(context.Background(), key, &job); err != nil {
 		t.Fatalf("expected job to exist: %v", err)
 	}
-	return strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+	for _, env := range job.Spec.Template.Spec.Containers[0].Env {
+		if env.Name == "UPGRADE_MODE" {
+			return env.Value
+		}
+	}
+	t.Fatalf("UPGRADE_MODE env var not found on job")
+	return ""
 }
 
 func TestAdapter_BeginBatch_FirstControlPlaneNodeUsesApply(t *testing.T) {
@@ -60,8 +65,8 @@ func TestAdapter_BeginBatch_FirstControlPlaneNodeUsesApply(t *testing.T) {
 		t.Fatalf("BeginBatch: %v", err)
 	}
 
-	if script := jobScript(t, c, "cp-1", "v1.30.0"); !strings.Contains(script, "kubeadm upgrade apply") {
-		t.Errorf("expected first control-plane node to use apply, got: %s", script)
+	if mode := jobUpgradeMode(t, c, "cp-1", "v1.30.0"); mode != "apply" {
+		t.Errorf("expected first control-plane node to use 'apply', got: %s", mode)
 	}
 }
 
@@ -84,9 +89,8 @@ func TestAdapter_BeginBatch_SubsequentControlPlaneNodeUsesNode(t *testing.T) {
 		t.Fatalf("BeginBatch: %v", err)
 	}
 
-	script := jobScript(t, c, "cp-2", "v1.30.0")
-	if strings.Contains(script, "kubeadm upgrade apply") || !strings.Contains(script, "kubeadm upgrade node") {
-		t.Errorf("expected subsequent control-plane node to use 'upgrade node', got: %s", script)
+	if mode := jobUpgradeMode(t, c, "cp-2", "v1.30.0"); mode != "node" {
+		t.Errorf("expected subsequent control-plane node to use 'node', got: %s", mode)
 	}
 }
 
@@ -101,8 +105,8 @@ func TestAdapter_BeginBatch_WorkerNeverUsesApply(t *testing.T) {
 		t.Fatalf("BeginBatch: %v", err)
 	}
 
-	if script := jobScript(t, c, "worker-1", "v1.30.0"); strings.Contains(script, "kubeadm upgrade apply") {
-		t.Errorf("expected worker node to never use apply, got: %s", script)
+	if mode := jobUpgradeMode(t, c, "worker-1", "v1.30.0"); mode != "node" {
+		t.Errorf("expected worker node to never use apply, got: %s", mode)
 	}
 }
 

@@ -31,10 +31,12 @@ var (
 	// this from an env var/flag once the image exists).
 	ExecutorImage = "ghcr.io/ningendo7/kubernetes-upgrade-operator-executor:latest"
 
-	// ExecutorNamespace is where executor Jobs are created. Must be the
-	// operator's own namespace so executorServiceAccount resolves.
-	// Configurable via SetExecutorNamespace.
-	ExecutorNamespace = "kubernetes-upgrade-operator-system"
+	// ExecutorNamespace is where executor Jobs are created. This is a
+	// dedicated namespace, separate from the manager's own - it runs at
+	// the "privileged" Pod Security Standard (see config/executor/), while
+	// the manager's namespace stays "restricted". Configurable via
+	// SetExecutorNamespace.
+	ExecutorNamespace = "kubernetes-upgrade-operator-executor"
 )
 
 // SetExecutorImage overrides the default executor image.
@@ -78,12 +80,14 @@ func jobNameFor(nodeName, targetVersion string) string {
 func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job {
 	backoffLimit := int32(2)
 	ttl := int32(600)
-	privileged := true
-	hostPathDir := corev1.HostPathDirectory
+	activeDeadline := int64(900)
+	allowPrivilegeEscalation := false
+	readOnlyRootFS := true
+	automountToken := false
 
-	script := upgradeNodeScript
+	upgradeMode := "node"
 	if useApply {
-		script = upgradeApplyScript
+		upgradeMode = "apply"
 	}
 
 	return &batchv1.Job{
@@ -105,13 +109,15 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 					},
 				},
 				Spec: corev1.PodSpec{
-					ServiceAccountName: executorServiceAccount,
-					RestartPolicy:      corev1.RestartPolicyNever,
+					ServiceAccountName:           executorServiceAccount,
+					AutomountServiceAccountToken: &automountToken,
+					RestartPolicy:                corev1.RestartPolicyNever,
 					// Setting NodeName directly (instead of a nodeSelector)
 					// bypasses the scheduler entirely, so this Job can still
 					// land on a node that's already been cordoned.
-					NodeName: nodeName,
-					HostPID:  true,
+					NodeName:              nodeName,
+					HostPID:               true,
+					ActiveDeadlineSeconds: &activeDeadline,
 					// Guards against a NoExecute taint (e.g. a health
 					// condition) evicting this Job mid-run; NodeName
 					// bypasses the scheduler but the kubelet's taint
@@ -123,35 +129,28 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 					},
 					Containers: []corev1.Container{
 						{
-							Name:    "kubeadm-upgrade",
-							Image:   ExecutorImage,
-							Command: []string{"/bin/sh", "-c"},
-							Args:    []string{script},
+							Name:  "kubeadm-upgrade",
+							Image: ExecutorImage,
 							Env: []corev1.EnvVar{
 								{
 									Name:  "TARGET_VERSION",
 									Value: targetVersion,
 								},
+								{
+									Name:  "UPGRADE_MODE",
+									Value: upgradeMode,
+								},
 							},
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: &privileged,
-							},
-							VolumeMounts: []corev1.VolumeMount{
-								{
-									Name:      "host-root",
-									MountPath: "/host",
+								// Deliberately not "privileged: true" -
+								// narrowed to exactly what nsenter needs to
+								// re-enter the host's namespaces.
+								Capabilities: &corev1.Capabilities{
+									Add:  []corev1.Capability{"SYS_ADMIN", "SYS_CHROOT"},
+									Drop: []corev1.Capability{"ALL"},
 								},
-							},
-						},
-					},
-					Volumes: []corev1.Volume{
-						{
-							Name: "host-root",
-							VolumeSource: corev1.VolumeSource{
-								HostPath: &corev1.HostPathVolumeSource{
-									Path: "/",
-									Type: &hostPathDir,
-								},
+								AllowPrivilegeEscalation: &allowPrivilegeEscalation,
+								ReadOnlyRootFilesystem:   &readOnlyRootFS,
 							},
 						},
 					},
@@ -160,26 +159,6 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 		},
 	}
 }
-
-// upgradeApplyScript runs on exactly one control-plane node per hop.
-//
-// NOTE: this assumes kubeadm and kubelet binaries matching TARGET_VERSION
-// are already present on the host and resolvable inside the nsenter'd host
-// namespaces. Installing those pinned binaries (via a package manager, or
-// baking them into a host-accessible path ahead of time) is a deliberately
-// separate concern from this Job's orchestration and is not yet
-// implemented - see the README's provider support table.
-const upgradeApplyScript = `set -eu
-nsenter --target 1 --mount --uts --ipc --net --pid -- kubeadm upgrade apply "${TARGET_VERSION}" -y
-nsenter --target 1 --mount --uts --ipc --net --pid --systemctl restart kubelet
-`
-
-// upgradeNodeScript runs on every other control-plane node and all workers.
-// Same binary-installation caveat as upgradeApplyScript applies.
-const upgradeNodeScript = `set -eu
-nsenter --target 1 --mount --uts --ipc --net --pid -- kubeadm upgrade node
-nsenter --target 1 --mount --uts --ipc --net --pid -- systemctl restart kubelet
-`
 
 // sanitizeLabelValue guards against a version string exceeding the
 // 63-character Kubernetes label-value limit.
