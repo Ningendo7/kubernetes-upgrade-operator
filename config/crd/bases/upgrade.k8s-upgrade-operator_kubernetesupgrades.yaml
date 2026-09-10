@@ -69,6 +69,14 @@ spec:
                   description: NodeGroupOverride overrides discovery-computed settings
                     for one named node group.
                   properties:
+                    acknowledgeReplaceRisk:
+                      description: |-
+                        acknowledgeReplaceRisk must be true to allow strategy=Replace for a
+                        Generic-provider group. Generic means the operator has no verified
+                        mechanism confirming a deleted node will actually be recreated -
+                        unlike EKS/ASG/LKE, where Replace is backed by a real, known
+                        mechanism. Ignored for all other providers.
+                      type: boolean
                     batchSize:
                       format: int32
                       type: integer

@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strconv"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -204,6 +205,14 @@ func main() {
 	if executorImage := os.Getenv("EXECUTOR_IMAGE"); executorImage != "" {
 		kubeadm.SetExecutorImage(executorImage)
 	}
+	if gidStr := os.Getenv("CONTAINERD_SOCKET_GID"); gidStr != "" {
+		gid, err := strconv.ParseInt(gidStr, 10, 64)
+		if err != nil {
+			setupLog.Error(err, "invalid CONTAINERD_SOCKET_GID, ignoring", "value", gidStr)
+		} else {
+			kubeadm.SetContainerdSocketGID(gid)
+		}
+	}
 
 	if err := (&controller.KubernetesUpgradeReconciler{
 		Client:            mgr.GetClient(),
@@ -215,10 +224,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.NodeGroupUpgradeReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Adapters: provider.DefaultRegistry,
-		Recorder: mgr.GetEventRecorderFor("nodegroupupgrade-controller"),
+		Client:     mgr.GetClient(),
+		Scheme:     mgr.GetScheme(),
+		Adapters:   provider.DefaultRegistry,
+		Recorder:   mgr.GetEventRecorderFor("nodegroupupgrade-controller"),
+		RestConfig: mgr.GetConfig(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "nodegroupupgrade")
 		os.Exit(1)

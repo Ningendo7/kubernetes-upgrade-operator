@@ -28,6 +28,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider"
 )
 
@@ -52,6 +53,7 @@ func (r *NodeGroupUpgradeReconciler) reconcileUpgrading(ctx context.Context, ng 
 		Log:           log,
 		Group:         ng,
 		TargetVersion: ng.Spec.TargetVersion,
+		RestConfig:    r.RestConfig,
 	}
 
 	ready, reason, err := adapter.Precheck(ctx, uc)
@@ -68,12 +70,58 @@ func (r *NodeGroupUpgradeReconciler) reconcileUpgrading(ctx context.Context, ng 
 		return ctrl.Result{}, err
 	}
 
+	// A node can already be at or past ng.Spec.TargetVersion before this
+	// batch even starts - its group's target is computed from another,
+	// older member of the SAME group (see upgrade.GroupCurrentVersion,
+	// which takes the group's oldest node), or this KubernetesUpgrade was
+	// recreated and is re-processing a node it already finished on a
+	// prior run. Skip it entirely rather than dispatching a Job that
+	// would otherwise try to install an OLDER version over a newer one -
+	// this is the same regression class NextGroupTarget guards against
+	// at the group level, but a single NodeGroupUpgrade has one
+	// TargetVersion for every member node, so an individual node within
+	// the group needs its own guard here too.
+	remaining := make([]corev1.Node, 0, len(batch))
+	statusChanged := false
+	for _, node := range batch {
+		idx := findNodeProgress(ng.Status.NodeProgress, node.Name)
+		if idx == -1 {
+			remaining = append(remaining, node)
+			continue
+		}
+		cmp, cmpErr := k8sutil.CompareVersions(node.Status.NodeInfo.KubeletVersion, ng.Spec.TargetVersion)
+		if cmpErr != nil {
+			// Can't tell - don't skip on an unparsable version, let the
+			// normal dispatch path run and surface a clearer error there.
+			remaining = append(remaining, node)
+			continue
+		}
+		if cmp >= 0 {
+			log.Info("node already at or past target version, skipping",
+				"node", node.Name, "current", node.Status.NodeInfo.KubeletVersion, "target", ng.Spec.TargetVersion)
+			ng.Status.NodeProgress[idx].Phase = "Upgraded"
+			statusChanged = true
+			continue
+		}
+		remaining = append(remaining, node)
+	}
+	batch = remaining
+
+	if statusChanged {
+		if err := r.Status().Update(ctx, ng); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	if needsBegin(ng.Status.NodeProgress, active) {
 		if err := adapter.BeginBatch(ctx, uc, batch); err != nil {
 			return r.handleAdapterError(ctx, ng, "BeginBatch", err)
 		}
-		for _, name := range active {
-			if idx := findNodeProgress(ng.Status.NodeProgress, name); idx != -1 {
+		// Only the nodes actually passed to BeginBatch (batch, post-skip
+		// filtering above) - iterating the original active list here
+		// would stomp the "Upgraded" phase just set on a skipped node.
+		for _, node := range batch {
+			if idx := findNodeProgress(ng.Status.NodeProgress, node.Name); idx != -1 {
 				ng.Status.NodeProgress[idx].Phase = "Upgrading"
 			}
 		}

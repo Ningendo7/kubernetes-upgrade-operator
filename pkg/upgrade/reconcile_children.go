@@ -34,7 +34,7 @@ func ResolveStrategy(group DiscoveredGroup, override *upgradev1alpha1.NodeGroupO
 
 	if override != nil && override.Strategy != nil {
 		requested := *override.Strategy
-		if isStrategyAllowedForProvider(group.Provider, requested) {
+		if isStrategyAllowedForProvider(group.Provider, requested, override.AcknowledgeReplaceRisk) {
 			return requested
 		}
 	}
@@ -54,11 +54,19 @@ func defaultStrategyForProvider(p upgradev1alpha1.ProviderType) upgradev1alpha1.
 // isStrategyAllowedForProvider rejects overrides that don't make sense for
 // a given provider: EKS-managed node groups and LKE pools are always
 // replaced by their respective cloud control planes, there is no in-place
-// path for them.
-func isStrategyAllowedForProvider(p upgradev1alpha1.ProviderType, s upgradev1alpha1.NodeGroupStrategy) bool {
+// path for them. Generic+Replace is a special case: it means deleting the
+// Node object with no operator-verified mechanism confirming anything
+// recreates it, so it requires explicit acknowledgement rather than being
+// as freely available as any other override.
+func isStrategyAllowedForProvider(p upgradev1alpha1.ProviderType, s upgradev1alpha1.NodeGroupStrategy, acknowledgeReplaceRisk bool) bool {
 	switch p {
 	case upgradev1alpha1.ProviderAWSEKSManagedNodeGroup, upgradev1alpha1.ProviderLinodeLKE:
 		return s == upgradev1alpha1.StrategyReplace
+	case upgradev1alpha1.ProviderGeneric:
+		if s == upgradev1alpha1.StrategyReplace {
+			return acknowledgeReplaceRisk
+		}
+		return true
 	default:
 		return true
 	}

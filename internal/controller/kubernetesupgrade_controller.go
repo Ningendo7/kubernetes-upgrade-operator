@@ -18,6 +18,8 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -25,6 +27,7 @@ import (
 	"k8s.io/client-go/discovery"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
@@ -47,7 +50,16 @@ type KubernetesUpgradeReconciler struct {
 	OperatorNamespace string
 }
 
-const pausedConditionType = "Paused"
+const (
+	pausedConditionType = "Paused"
+
+	// kubernetesUpgradeFinalizer ensures Reconcile gets one last chance to
+	// release the mutual-exclusion lease before a KubernetesUpgrade is
+	// actually removed. Without it, deleting one mid-upgrade would leak
+	// the lease for up to leaseDuration, blocking any real subsequent
+	// upgrade cluster-wide.
+	kubernetesUpgradeFinalizer = "upgrade.k8s-upgrade-operator/finalizer"
+)
 
 // +kubebuilder:rbac:groups=upgrade.k8s-upgrade-operator,resources=kubernetesupgrades,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=upgrade.k8s-upgrade-operator,resources=kubernetesupgrades/status,verbs=get;update;patch
@@ -70,6 +82,29 @@ func (r *KubernetesUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	holderID := ku.Namespace + "/" + ku.Name
+
+	if !ku.DeletionTimestamp.IsZero() {
+		if controllerutil.ContainsFinalizer(&ku, kubernetesUpgradeFinalizer) {
+			if err := r.releaseLease(ctx, holderID); err != nil {
+				return ctrl.Result{}, err
+			}
+			controllerutil.RemoveFinalizer(&ku, kubernetesUpgradeFinalizer)
+			if err := r.Update(ctx, &ku); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
+		return ctrl.Result{}, nil
+	}
+
+	if !controllerutil.ContainsFinalizer(&ku, kubernetesUpgradeFinalizer) {
+		controllerutil.AddFinalizer(&ku, kubernetesUpgradeFinalizer)
+		if err := r.Update(ctx, &ku); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{Requeue: true}, nil
+	}
+
 	if changed := setPausedCondition(&ku); changed {
 		if err := r.Status().Update(ctx, &ku); err != nil {
 			return ctrl.Result{}, err
@@ -78,6 +113,28 @@ func (r *KubernetesUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	if ku.Spec.Paused {
 		log.V(1).Info("upgrade is paused, skipping reconciliation")
 		return ctrl.Result{}, nil
+	}
+
+	switch ku.Status.Phase {
+	case upgradev1alpha1.PhaseComplete, upgradev1alpha1.PhaseFailed, upgradev1alpha1.PhasePaused:
+		if err := r.releaseLease(ctx, holderID); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
+
+	// Every other phase represents an actively-running upgrade: hold (and
+	// continuously renew) the mutual-exclusion lease for the whole
+	// duration, not just during Prechecks - otherwise an upgrade running
+	// longer than leaseDuration looks abandoned to any other
+	// KubernetesUpgrade checking it, even while still legitimately active.
+	acquired, err := r.acquireLease(ctx, holderID)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("acquiring upgrade lease: %w", err)
+	}
+	if !acquired {
+		log.Info("another KubernetesUpgrade is already active, waiting")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	}
 
 	switch ku.Status.Phase {
@@ -93,11 +150,6 @@ func (r *KubernetesUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return r.reconcileWorkersUpgrade(ctx, &ku)
 	case upgradev1alpha1.PhasePostchecks:
 		return r.reconcilePostchecks(ctx, &ku)
-	case upgradev1alpha1.PhaseComplete, upgradev1alpha1.PhaseFailed, upgradev1alpha1.PhasePaused:
-		if err := r.releaseLease(ctx, ku.Namespace+"/"+ku.Name); err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
 	default:
 		log.Info("unknown phase, taking no action", "phase", ku.Status.Phase)
 		return ctrl.Result{}, nil

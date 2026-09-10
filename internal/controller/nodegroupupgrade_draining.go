@@ -82,7 +82,7 @@ func (r *NodeGroupUpgradeReconciler) reconcileDraining(ctx context.Context, ng *
 			return ctrl.Result{}, fmt.Errorf("draining node %q: %w", name, err)
 		}
 
-		if result.Remaining == 0 {
+		if result.Remaining() == 0 {
 			if idx := findNodeProgress(ng.Status.NodeProgress, name); idx != -1 {
 				ng.Status.NodeProgress[idx].Phase = "Drained"
 			}
@@ -136,8 +136,8 @@ func (r *NodeGroupUpgradeReconciler) handleStuckDrain(ctx context.Context, ng *u
 		return nil
 	}
 
-	log.Info("drain timeout exceeded and force is set, force-deleting blocked pods", "node", nodeName, "blocked", result.Blocked)
-	for _, b := range result.Blocked {
+	log.Info("drain timeout exceeded and force is set, force-deleting blocked pods", "node", nodeName, "blocked", result.Blocked())
+	for _, b := range result.Blocked() {
 		pod := corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: b.Namespace,

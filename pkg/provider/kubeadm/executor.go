@@ -37,6 +37,20 @@ var (
 	// the manager's namespace stays "restricted". Configurable via
 	// SetExecutorNamespace.
 	ExecutorNamespace = "kubernetes-upgrade-operator-executor"
+
+	// ContainerdSocketGID, when set (non-nil), is added as a supplementary
+	// group on the executor Job's pod. Some hosts run containerd with its
+	// CRI socket owned by a non-root group (e.g. a template that starts
+	// containerd as an unprivileged user rather than root:root) - kubeadm
+	// itself needs to connect to that socket directly during "upgrade
+	// apply" (to prepull images), and this process's capabilities are
+	// deliberately narrowed to exactly SYS_ADMIN/SYS_CHROOT/SYS_PTRACE, not
+	// CAP_DAC_OVERRIDE, so it cannot bypass the socket's normal permission
+	// bits. Matching its group via SupplementalGroups grants exactly the
+	// access needed through ordinary Unix permissions, rather than
+	// widening capabilities cluster-node-wide. Unset by default: this is a
+	// host-specific accommodation, not a general requirement.
+	ContainerdSocketGID *int64
 )
 
 // SetExecutorImage overrides the default executor image.
@@ -47,6 +61,13 @@ func SetExecutorImage(image string) {
 // SetExecutorNamespace overrides the namespace executor Jobs run in.
 func SetExecutorNamespace(ns string) {
 	ExecutorNamespace = ns
+}
+
+// SetContainerdSocketGID configures the supplementary group added to the
+// executor Job's pod so it can connect to a non-root-owned containerd
+// socket. See the ContainerdSocketGID doc comment for why this exists.
+func SetContainerdSocketGID(gid int64) {
+	ContainerdSocketGID = &gid
 }
 
 const (
@@ -90,7 +111,7 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 		upgradeMode = "apply"
 	}
 
-	return &batchv1.Job{
+	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobNameFor(nodeName, targetVersion),
 			Namespace: ExecutorNamespace,
@@ -106,6 +127,17 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 				ObjectMeta: metav1.ObjectMeta{
 					Labels: map[string]string{
 						nodeNameLabel: nodeName,
+					},
+					Annotations: map[string]string{
+						// containerd's default AppArmor profile
+						// (cri-containerd.apparmor.d) denies ptrace
+						// regardless of Linux capabilities - AppArmor
+						// mediation is enforced independently of
+						// CAP_SYS_PTRACE. Without this, nsenter cannot
+						// even open /proc/1/ns/* to re-enter the host's
+						// namespaces. Scoped to this one container only,
+						// not a cluster-wide default change.
+						"container.apparmor.security.beta.kubernetes.io/kubeadm-upgrade": "unconfined",
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -146,7 +178,12 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 								// narrowed to exactly what nsenter needs to
 								// re-enter the host's namespaces.
 								Capabilities: &corev1.Capabilities{
-									Add:  []corev1.Capability{"SYS_ADMIN", "SYS_CHROOT"},
+									// SYS_PTRACE is required just to *open* another
+									// process's /proc/<pid>/ns/* handles (ptrace_may_access);
+									// SYS_ADMIN is separately required to actually setns()
+									// into them once open. Both are needed for nsenter to
+									// re-enter the host's namespaces.
+									Add:  []corev1.Capability{"SYS_ADMIN", "SYS_CHROOT", "SYS_PTRACE"},
 									Drop: []corev1.Capability{"ALL"},
 								},
 								AllowPrivilegeEscalation: &allowPrivilegeEscalation,
@@ -158,6 +195,14 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 			},
 		},
 	}
+
+	if ContainerdSocketGID != nil {
+		job.Spec.Template.Spec.SecurityContext = &corev1.PodSecurityContext{
+			SupplementalGroups: []int64{*ContainerdSocketGID},
+		}
+	}
+
+	return job
 }
 
 // sanitizeLabelValue guards against a version string exceeding the

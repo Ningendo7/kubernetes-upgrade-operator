@@ -13,6 +13,10 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 COPY upgrade.sh /usr/local/bin/upgrade.sh
-RUN chmod 0755 /usr/local/bin/upgrade.sh
+COPY etcd-healthcheck.sh /usr/local/bin/etcd-healthcheck.sh
+RUN chmod 0755 /usr/local/bin/upgrade.sh /usr/local/bin/etcd-healthcheck.sh
+
+# tar is already present in debian:12-slim (a dpkg dependency), needed
+# here to extract etcdctl from its release tarball - no new package.
 
 ENTRYPOINT ["/usr/local/bin/upgrade.sh"]

@@ -23,6 +23,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -34,29 +35,51 @@ import (
 )
 
 const (
-	fieldOwner     = "kubernetesupgrade-controller"
-	parentLabelKey = "upgrade.k8s-upgrade-operator/kubernetesupgrade"
-	groupLabelKey  = "upgrade.k8s-upgrade-operator/node-group"
+	fieldOwner             = "kubernetesupgrade-controller"
+	parentLabelKey         = "upgrade.k8s-upgrade-operator/kubernetesupgrade"
+	groupLabelKey          = "upgrade.k8s-upgrade-operator/node-group"
+	pausedReasonAnnotation = "upgrade.k8s-upgrade-operator/paused-reason"
 )
 
 func (r *KubernetesUpgradeReconciler) reconcileDiscovering(ctx context.Context, ku *upgradev1alpha1.KubernetesUpgrade) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
+	var nodes corev1.NodeList
+	if err := r.List(ctx, &nodes); err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing nodes: %w", err)
+	}
+
+	groups, err := upgrade.DiscoverGroups(nodes.Items, ku.Spec.Scope)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("discovering node groups: %w", err)
+	}
+
 	if ku.Status.StartingVersion == "" || len(ku.Status.StepPlan) == 0 {
-		serverVersion, err := r.DiscoveryClient.ServerVersion()
+		// The step plan must be computed from the fleets actual oldest
+		// version, not the apiservers own - a group that started behind
+		// the rest of the cluster is exactly the case that must not be
+		// missed here (see OldestVersionAcrossGroups). If no group can
+		// report a version at all (e.g. scope matches no real nodes),
+		// fall back to the apiservers version so a scoped-to-nothing
+		// KubernetesUpgrade stays a safe, harmless no-op.
+		startingVersion, err := upgrade.OldestVersionAcrossGroups(nodes.Items, groups)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("getting apiserver version: %w", err)
+			serverVersion, svErr := r.DiscoveryClient.ServerVersion()
+			if svErr != nil {
+				return ctrl.Result{}, fmt.Errorf("getting apiserver version: %w", svErr)
+			}
+			startingVersion = serverVersion.GitVersion
 		}
 
 		allowDowngrade := ku.Spec.Safety != nil && ku.Spec.Safety.AllowDowngrade
-		steps, err := upgrade.ComputeStepPlan(serverVersion.GitVersion, ku.Spec.TargetVersion, allowDowngrade)
+		steps, err := upgrade.ComputeStepPlan(startingVersion, ku.Spec.TargetVersion, allowDowngrade)
 		if err != nil {
 			ku.Status.Phase = upgradev1alpha1.PhaseFailed
 			ku.Status.Message = err.Error()
 			return ctrl.Result{}, r.Status().Update(ctx, ku)
 		}
 
-		ku.Status.StartingVersion = serverVersion.GitVersion
+		ku.Status.StartingVersion = startingVersion
 		ku.Status.StepPlan = steps
 		ku.Status.CurrentStepIndex = 0
 
@@ -71,26 +94,45 @@ func (r *KubernetesUpgradeReconciler) reconcileDiscovering(ctx context.Context, 
 		}
 	}
 
-	var nodes corev1.NodeList
-	if err := r.List(ctx, &nodes); err != nil {
-		return ctrl.Result{}, fmt.Errorf("listing nodes: %w", err)
-	}
-
-	groups, err := upgrade.DiscoverGroups(nodes.Items, ku.Spec.Scope)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("discovering node groups: %w", err)
-	}
-
-	targetVersion := ku.Status.StepPlan[ku.Status.CurrentStepIndex].ToVersion
+	hopTarget := ku.Status.StepPlan[ku.Status.CurrentStepIndex].ToVersion
 
 	discovered := make([]upgradev1alpha1.DiscoveredGroupStatus, 0, len(groups))
+	genericReplaceActive := false
+	genericReplaceRejected := false
+
 	for _, group := range groups {
 		override := findOverride(ku.Spec.GroupOverrides, group.Name)
 		if override != nil && override.Skip != nil && *override.Skip {
 			continue
 		}
 
+		// hopTarget assumes every group started from the same version the
+		// apiserver reported - not true for a group that started behind
+		// the rest of the cluster, or is resuming a partially-completed
+		// upgrade. Clamp per-group so nobody ever gets asked to skip a
+		// minor version, even if that means this group needs extra passes
+		// to catch all the way up to hopTarget.
+		groupCurrent, err := upgrade.GroupCurrentVersion(nodes.Items, group)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("determining current version for group %q: %w", group.Name, err)
+		}
+		targetVersion, err := upgrade.NextGroupTarget(groupCurrent, hopTarget)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("computing next target for group %q: %w", group.Name, err)
+		}
+
 		child := buildDesiredChild(ku, group, targetVersion, override, ku.Spec.Defaults)
+
+		if group.Provider == upgradev1alpha1.ProviderGeneric {
+			requestedReplace := override != nil && override.Strategy != nil && *override.Strategy == upgradev1alpha1.StrategyReplace
+			switch {
+			case requestedReplace && child.Spec.Strategy == upgradev1alpha1.StrategyReplace:
+				genericReplaceActive = true
+			case requestedReplace:
+				genericReplaceRejected = true
+
+			}
+		}
 		if err := controllerutil.SetControllerReference(ku, child, r.Scheme); err != nil {
 			return ctrl.Result{}, fmt.Errorf("setting controller reference for group %q: %w", group.Name, err)
 		}
@@ -114,6 +156,25 @@ func (r *KubernetesUpgradeReconciler) reconcileDiscovering(ctx context.Context, 
 			NodeCount:    int32(len(group.Nodes)),
 			ChildRefName: child.Name,
 			Heuristic:    group.Heuristic,
+		})
+	}
+
+	switch {
+	case genericReplaceRejected:
+		meta.SetStatusCondition(&ku.Status.Conditions, metav1.Condition{
+			Type:   "GenericReplaceRisk",
+			Status: metav1.ConditionFalse,
+			Reason: "NotAcknowledged",
+			Message: "one or more Generic-provider groups requested strategy=Replace without " +
+				"groupOverrides[].acknowledgeReplaceRisk=true; falling back to InPlace for those groups.",
+		})
+	case genericReplaceActive:
+		meta.SetStatusCondition(&ku.Status.Conditions, metav1.Condition{
+			Type:   "GenericReplaceRisk",
+			Status: metav1.ConditionTrue,
+			Reason: "AcknowledgedAndActive",
+			Message: "one or more Generic-provider groups are using strategy=Replace with " +
+				"acknowledgeReplaceRisk=true. The operator cannot verify a deleted node is actually recreated.",
 		})
 	}
 
@@ -178,7 +239,24 @@ func buildDesiredChild(
 		}
 	}
 
-	if override != nil && override.Pause != nil {
+	// A heuristically-classified group (see pkg/upgrade.DiscoverGroups) got
+	// its provider guessed with low confidence - e.g. a bare AWS
+	// providerID could be a real self-managed ASG, or just a plain EC2
+	// instance manually kubeadm-joined. Since the resolved Strategy could
+	// be wrong AND destructive (Replace), such a group fails closed:
+	// paused by default until a human either fixes the classification
+	// (the provider-override annotation) or explicitly confirms intent by
+	// setting groupOverrides[].strategy for this specific group. Any other
+	// override field (batchSize, pause, etc.) does NOT count as
+	// confirmation - it doesn't mean anyone actually looked at the
+	// provider guess.
+	explicitlyConfirmed := override != nil && override.Strategy != nil
+	forcePause := group.Heuristic && !explicitlyConfirmed
+
+	switch {
+	case forcePause:
+		spec.Paused = true
+	case override != nil && override.Pause != nil:
 		spec.Paused = *override.Pause
 	}
 
@@ -192,6 +270,15 @@ func buildDesiredChild(
 			},
 		},
 		Spec: spec,
+	}
+
+	if forcePause {
+		child.Annotations = map[string]string{
+			pausedReasonAnnotation: "heuristic classification: this group's provider was guessed with low confidence " +
+				"(see status.discoveredGroups[].heuristic on the parent KubernetesUpgrade). Confirm intent via " +
+				"spec.groupOverrides[].strategy for this group, or resolve the ambiguity directly with the " +
+				"upgrade.k8s-upgrade-operator/provider-override annotation on the affected nodes.",
+		}
 	}
 	child.TypeMeta = metav1.TypeMeta{
 		APIVersion: upgradev1alpha1.GroupVersion.String(),

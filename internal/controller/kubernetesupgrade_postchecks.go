@@ -28,6 +28,7 @@ import (
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/upgrade"
 )
 
 // reconcilePostchecks does a single-pass cluster health check before
@@ -47,6 +48,39 @@ func (r *KubernetesUpgradeReconciler) reconcilePostchecks(ctx context.Context, k
 			log.Info("waiting for node to become Ready during postchecks",
 				"node", nodes.Items[i].Name, "reason", k8sutil.NodeNotReadyReason(&nodes.Items[i]))
 			return ctrl.Result{RequeueAfter: 15 * time.Second}, nil
+		}
+	}
+
+	// A group given an intermediate, clamped target this pass (see
+	// reconcileDiscovering/upgrade.NextGroupTarget - a group that started
+	// more than one minor behind this hop's target) will have reported
+	// NGComplete for THAT intermediate version, not this hop's actual
+	// ToVersion. Don't advance past this hop until every discovered group
+	// has genuinely caught all the way up to it - loop back to Discovering
+	// instead, which will compute each lagging group's next waypoint.
+	hopTarget := ku.Status.StepPlan[ku.Status.CurrentStepIndex].ToVersion
+	groups, err := upgrade.DiscoverGroups(nodes.Items, ku.Spec.Scope)
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("discovering node groups: %w", err)
+	}
+	for _, group := range groups {
+		current, err := upgrade.GroupCurrentVersion(nodes.Items, group)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("determining current version for group %q: %w", group.Name, err)
+		}
+		// >= rather than strict equality: a group that already finished
+		// an earlier hop (or the whole upgrade) on a prior pass can be
+		// AHEAD of this hop's target, not just exactly at it - that
+		// still counts as satisfied for this hop.
+		cmp, err := k8sutil.CompareVersions(current, hopTarget)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("comparing versions for group %q: %w", group.Name, err)
+		}
+		if cmp < 0 {
+			log.Info("group has not yet reached this hops target, continuing",
+				"group", group.Name, "current", current, "target", hopTarget)
+			ku.Status.Phase = upgradev1alpha1.PhaseDiscovering
+			return ctrl.Result{Requeue: true}, r.Status().Update(ctx, ku)
 		}
 	}
 

@@ -123,10 +123,11 @@ var _ = BeforeSuite(func() {
 	}).SetupWithManager(k8sManager)).To(Succeed())
 
 	Expect((&NodeGroupUpgradeReconciler{
-		Client:   k8sManager.GetClient(),
-		Scheme:   k8sManager.GetScheme(),
-		Adapters: testAdapters,
-		Recorder: k8sManager.GetEventRecorderFor("test"),
+		Client:     k8sManager.GetClient(),
+		Scheme:     k8sManager.GetScheme(),
+		Adapters:   testAdapters,
+		Recorder:   k8sManager.GetEventRecorderFor("test"),
+		RestConfig: cfg,
 	}).SetupWithManager(k8sManager)).To(Succeed())
 
 	go func() {

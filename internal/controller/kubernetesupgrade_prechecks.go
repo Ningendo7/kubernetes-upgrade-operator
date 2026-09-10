@@ -41,16 +41,6 @@ const (
 func (r *KubernetesUpgradeReconciler) reconcilePrechecks(ctx context.Context, ku *upgradev1alpha1.KubernetesUpgrade) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
-	holderID := ku.Namespace + "/" + ku.Name
-	acquired, err := r.acquireLease(ctx, holderID)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("acquiring upgrade lease: %w", err)
-	}
-	if !acquired {
-		log.Info("another KubernetesUpgrade is already active, waiting")
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
-
 	var nodes corev1.NodeList
 	if err := r.List(ctx, &nodes); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing nodes: %w", err)

@@ -54,6 +54,34 @@ func jobUpgradeMode(t *testing.T, c client.Client, nodeName, targetVersion strin
 	return ""
 }
 
+func TestAdapter_Precheck_WorkerGroupSkipsEtcdCheck(t *testing.T) {
+	// No CP nodes seeded at all, and no RestConfig - if a worker group's
+	// Precheck tried to run the etcd-quorum check, this would fail.
+	c := newAdapterTestClient()
+	a := &Adapter{}
+	group := &upgradev1alpha1.NodeGroupUpgrade{Spec: upgradev1alpha1.NodeGroupUpgradeSpec{Role: upgradev1alpha1.RoleWorker}}
+	uc := provider.UpgradeContext{Client: c, Group: group}
+
+	ready, _, err := a.Precheck(context.Background(), uc)
+	if err != nil {
+		t.Fatalf("Precheck: %v", err)
+	}
+	if !ready {
+		t.Errorf("expected a worker group to be ready (no control-plane nodes to gate on, etcd check not applicable)")
+	}
+}
+
+func TestAdapter_Precheck_ControlPlaneGroupRequiresRestConfig(t *testing.T) {
+	c := newAdapterTestClient()
+	a := &Adapter{}
+	group := &upgradev1alpha1.NodeGroupUpgrade{Spec: upgradev1alpha1.NodeGroupUpgradeSpec{Role: upgradev1alpha1.RoleControlPlane}}
+	uc := provider.UpgradeContext{Client: c, Group: group} // RestConfig deliberately nil
+
+	if _, _, err := a.Precheck(context.Background(), uc); err == nil {
+		t.Fatalf("expected Precheck to fail loudly when RestConfig is missing for a control-plane group")
+	}
+}
+
 func TestAdapter_BeginBatch_FirstControlPlaneNodeUsesApply(t *testing.T) {
 	c := newAdapterTestClient()
 	a := &Adapter{}

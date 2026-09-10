@@ -79,6 +79,14 @@ func TestBuildUpgradeJob_HardenedHostAccess(t *testing.T) {
 	if sc.Capabilities == nil || !containsCapability(sc.Capabilities.Add, "SYS_ADMIN") {
 		t.Errorf("expected SYS_ADMIN capability to be added, got %+v", sc.Capabilities)
 	}
+	if sc.Capabilities == nil || !containsCapability(sc.Capabilities.Add, "SYS_PTRACE") {
+		t.Errorf("expected SYS_PTRACE capability to be added (required to open /proc/1/ns/* before setns), got %+v", sc.Capabilities)
+	}
+
+	const wantAppArmorAnnotation = "container.apparmor.security.beta.kubernetes.io/kubeadm-upgrade"
+	if got := job.Spec.Template.ObjectMeta.Annotations[wantAppArmorAnnotation]; got != "unconfined" {
+		t.Errorf("expected pod template annotation %q to be %q (containerd's default AppArmor profile denies ptrace regardless of capabilities), got %q", wantAppArmorAnnotation, "unconfined", got)
+	}
 
 	if len(container.VolumeMounts) != 0 {
 		t.Errorf("expected no volume mounts (nsenter needs no host mount), got %+v", container.VolumeMounts)
@@ -86,6 +94,32 @@ func TestBuildUpgradeJob_HardenedHostAccess(t *testing.T) {
 	if len(pod.Volumes) != 0 {
 		t.Errorf("expected no volumes at all, got %+v", pod.Volumes)
 	}
+}
+
+// TestBuildUpgradeJob_ContainerdSocketGID covers a real bug found via
+// real-cluster testing: some hosts run containerd with its CRI socket
+// owned by a non-root group, which this capability-limited (no
+// CAP_DAC_OVERRIDE) process cannot connect to via UID 0 alone. When
+// configured, the pod-level SupplementalGroups must carry that GID.
+func TestBuildUpgradeJob_ContainerdSocketGID(t *testing.T) {
+	t.Cleanup(func() { ContainerdSocketGID = nil })
+
+	t.Run("unset by default", func(t *testing.T) {
+		ContainerdSocketGID = nil
+		job := buildUpgradeJob("worker-1", "v1.30.0", false)
+		if job.Spec.Template.Spec.SecurityContext != nil {
+			t.Errorf("expected no pod-level SecurityContext when unset, got %+v", job.Spec.Template.Spec.SecurityContext)
+		}
+	})
+
+	t.Run("added as a supplemental group when configured", func(t *testing.T) {
+		SetContainerdSocketGID(1000)
+		job := buildUpgradeJob("worker-1", "v1.30.0", false)
+		sc := job.Spec.Template.Spec.SecurityContext
+		if sc == nil || len(sc.SupplementalGroups) != 1 || sc.SupplementalGroups[0] != 1000 {
+			t.Errorf("expected SupplementalGroups [1000], got %+v", sc)
+		}
+	})
 }
 
 func containsCapability(caps []corev1.Capability, want corev1.Capability) bool {

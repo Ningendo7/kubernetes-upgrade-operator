@@ -18,47 +18,9 @@ A production-focused Kubernetes operator for orchestrating safe, resumable clust
 
 ## Architecture
 
-Two CRDs, two controllers, one provider-adapter interface:
+Two CRDs, two controllers, one provider-adapter interface: a top-level `KubernetesUpgrade` state machine discovers and drives per-group `NodeGroupUpgrade` children, each dispatched to a `pkg/provider.Adapter` implementation based on its discovered provider.
 
-- **`KubernetesUpgrade`** (namespaced) — the resource a user creates. Holds `spec.targetVersion` plus optional escape hatches (`scope`, `defaults`, `groupOverrides`, `safety`). Drives a top-level state machine:
-
-  ```
-  Pending → Discovering → Prechecks → ControlPlaneUpgrade → WorkersUpgrade → Postchecks → Complete
-                                                                                          ↘ Failed / Paused
-  ```
-
-  This loops once per single-minor-version hop in `status.stepPlan` when the target is more than one minor version ahead.
-
-- **`NodeGroupUpgrade`** (namespaced, owned by a `KubernetesUpgrade`) — one per discovered node group; control-plane nodes always collapse into their own group regardless of provider. State machine:
-
-  ```
-  Pending → Draining → Upgrading → Verifying → Complete
-                                              ↘ Failed / Paused
-  ```
-
-  batched by `maxUnavailable`/`batchSize`, never touching more nodes at once than the group's resolved concurrency limit.
-
-- **`pkg/provider.Adapter`** — the interface implemented per provider (`kubeadm`, `generic`, `awseks`, `awsasg`, `linodelke`), dispatched by the `NodeGroupUpgrade` controller based on the group's classified `Provider`. The `InPlace` path (kubeadm and generic) executes host-level upgrades via a privileged per-node Job that `nsenter`s into the host's PID 1 namespaces — the controller has no SSH access to nodes, and a real `chroot` isn't enough to restart the host's `kubelet` via `systemctl`.
-
-### Discovery: how the CR stays small
-
-On every reconcile, `pkg/upgrade.DiscoverGroups` lists `Node`s and classifies each one:
-
-1. An explicit `upgrade.k8s-upgrade-operator/provider-override` annotation wins outright, for cases the heuristics below get wrong.
-2. Otherwise, `providerID` prefix + well-known labels decide it: `aws:///...` + `eks.amazonaws.com/nodegroup` → EKS-managed; bare `aws:///...` → self-managed ASG (flagged low-confidence — see below); `linode://...` + `lke.linode.com/pool-id` → LKE; empty `providerID` → Kubeadm (the on-prem/bare-metal default); anything else → Generic.
-3. Nodes are grouped by `(role, provider, group-identity)` — control-plane nodes always form one `control-plane` group; workers group by their provider's pool identity, falling back to a single `workers` group.
-4. Each group's `NodeGroupUpgrade` child is reconciled via Server-Side Apply with a dedicated field manager, so the controller's computed defaults stay in sync with cluster reality without clobbering fields a human has hand-edited on the child directly.
-
-Some classifications are inherently ambiguous — e.g. a bare `aws:///` `providerID` with no EKS label could be a real self-managed ASG, or just a plain EC2 instance manually `kubeadm join`ed with the AWS cloud-provider integration enabled. Groups discovered this way are marked `heuristic: true` in `status.discoveredGroups`, so it's visible before the operator picks a (possibly wrong, possibly destructive) default strategy for them. Fix it with the override annotation.
-
-### Safety mechanics
-
-- Control-plane group is hard-pinned to `batchSize=1`, never user-configurable, and strategy is hard-pinned to `InPlace` regardless of any override (replacing a control-plane node risks etcd membership/quorum in ways this operator doesn't manage).
-- Before moving to the next control-plane node, a proxy health check requires a majority of control-plane `Node`s to be `Ready` (real `etcdctl`-based quorum checking needs privileged access this operator doesn't have yet — see Roadmap).
-- Draining is PDB-aware via the real Kubernetes eviction API; a drain blocked by a PodDisruptionBudget pauses and retries rather than force-evicting, unless `drain.force` is explicitly set.
-- A `coordination.k8s.io` Lease prevents two `KubernetesUpgrade`s from running concurrently cluster-wide.
-- Failures set `Phase=Failed`/`Paused` and stop — there is no automatic rollback of already-upgraded nodes.
-- The `InPlace` path's privileged, node-pinned executor Job is this operator's single highest-risk operation, treated accordingly — dedicated namespace at the Pod Security `privileged` tier (everything else runs `restricted`), narrowed capabilities instead of blanket `privileged: true`, zero ServiceAccount permissions, no host filesystem mounts, checksum-verified binary fetches. See **[SECURITY.md](SECURITY.md)** for the full reasoning, including alternatives considered and why they weren't chosen.
+See **[docs/architecture.md](docs/architecture.md)** for the full state machines, the discovery mechanism that keeps the CR small, and the safety mechanics (control-plane sequencing, the etcd health check, drain policy, mutual exclusion). See **[SECURITY.md](SECURITY.md)** for the reasoning behind the executor Job — this operator's single highest-risk operation — including alternatives considered and why they weren't chosen.
 
 ## Provider support
 
@@ -86,15 +48,20 @@ make run                  # run the manager against your current kubeconfig
 This project is under active development. Current progress:
 
 - [x] `KubernetesUpgrade` and `NodeGroupUpgrade` API types
-- [x] `pkg/k8sutil` — cordon/uncordon, PDB-aware drain, node readiness/version checks, control-plane proxy health check
-- [x] `pkg/upgrade` — node discovery/classification, multi-minor step-plan computation, batching, strategy resolution
+- [x] `pkg/k8sutil` — cordon/uncordon, PDB-aware drain (explicit per-pod state), node readiness/version checks, control-plane health (Node-Ready proxy + real per-node etcd `/healthz` check + a real `etcdctl` quorum check via a dedicated privileged Job, validated against a real 3-node control-plane cluster)
+- [x] `pkg/upgrade` — node discovery/classification (fail-closed on ambiguity), multi-minor step-plan computation, batching, strategy resolution
 - [x] `pkg/provider` — adapter interface and registry
 - [x] `pkg/provider/kubeadm` and `pkg/provider/generic` real implementations
 - [x] `pkg/provider/{awseks,awsasg,linodelke}` stub implementations
 - [x] `KubernetesUpgrade` and `NodeGroupUpgrade` controllers (full state machines, wired into `cmd/main.go`)
 - [x] Validating webhook (no-downgrade, hop-count sanity ceiling)
-- [x] envtest integration coverage for both controllers and the webhook
+- [x] envtest integration coverage for both controllers and the webhook, including a full multi-hop upgrade cycle
 - [x] Kubeadm executor image source (`images/kubeadm-executor/`) — hardened per [SECURITY.md](SECURITY.md)
-- [ ] The executor image actually built and published to a registry, and `ExecutorImage` pinned to its digest (currently a mutable `:latest` tag with nothing behind it yet)
-- [ ] End-to-end testing against a real kubeadm cluster (kind has no real kubelets to validate the nsenter host-mutation path against)
+- [ ] A pinned, version-checksummed table for the kubeadm binary fetch (currently trusts the checksum served alongside the binary itself — see [SECURITY.md](SECURITY.md))
+- [x] The executor image built and published (`docker.io/ningendo7/k8s-upgrade-operator-executor`) — currently a mutable `:test` tag, not yet pinned by digest (see below)
+- [ ] `ExecutorImage`/the manager image pinned to a digest rather than a mutable tag (currently `:test`, acceptable for the active testing phase this project is still in, not for a real deployment)
+- [x] End-to-end testing against a real multi-control-plane kubeadm cluster on Linode VMs (InPlace worker upgrades, control-plane upgrades with real etcd quorum via both the apiserver-proxy and real-`etcdctl` checks, multi-minor-hop upgrades, patch-only upgrades) — see [docs/architecture.md](docs/architecture.md) for bugs this surfaced and fixed
+- [ ] `spec.safety.allowDowngrade` does not correctly handle a fleet where node groups sit at mixed versions: the per-group step logic (`upgrade.NextGroupTarget`) never moves a group backward, which closes a real regression risk during upgrades but also makes an authorized downgrade a silent no-op for any group already at or below the requested version. Safe (nothing moves the wrong direction), not yet correct. Narrow, opt-in-only edge case, not exercised by any test.
+- [ ] A node that joins a group mid-upgrade (while its `NodeGroupUpgrade` is already past `Pending`) is not picked up until the *next* `KubernetesUpgrade` starts fresh — `NodeProgress` is only (re)seeded from `spec.Nodes` in `reconcilePending`. Not dangerous (the node is simply deferred a cycle, never mishandled), but not immediate either.
+- [ ] Observability: custom Prometheus metrics beyond controller-runtime's generic reconcile metrics; Grafana dashboard
 - [ ] `make lint` clean run (deferred to CI — see `.github/workflows/lint.yml`)

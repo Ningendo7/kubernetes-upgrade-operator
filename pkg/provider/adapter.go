@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
@@ -33,6 +34,11 @@ type UpgradeContext struct {
 	Log           logr.Logger
 	Group         *upgradev1alpha1.NodeGroupUpgrade
 	TargetVersion string
+
+	// RestConfig lets an adapter reach cluster components directly by
+	// address (e.g. a control-plane node's own apiserver instance,
+	// bypassing any load balancer) - see pkg/provider/kubeadm's Precheck.
+	RestConfig *rest.Config
 }
 
 // NodePhase is a single node's progress within an adapter's batch

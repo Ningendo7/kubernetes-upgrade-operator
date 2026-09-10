@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,8 +42,9 @@ type NodeGroupUpgradeReconciler struct {
 
 	// Adapters is injectable so tests can register fake adapters,
 	// completely isolated from provider.DefaultRegistry.
-	Adapters *provider.Registry
-	Recorder record.EventRecorder
+	Adapters   *provider.Registry
+	Recorder   record.EventRecorder
+	RestConfig *rest.Config
 }
 
 // +kubebuilder:rbac:groups=upgrade.k8s-upgrade-operator,resources=nodegroupupgrades,verbs=get;list;watch;create;update;patch;delete
@@ -53,6 +55,7 @@ type NodeGroupUpgradeReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups=policy,resources=poddisruptionbudgets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:urls=/healthz/etcd,verbs=get
 
 // Reconcile drives a NodeGroupUpgrade through its state machine:
 // Pending -> Draining -> Upgrading -> Verifying -> (loop back to Draining
@@ -79,6 +82,22 @@ func (r *NodeGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
+	// A multi-hop KubernetesUpgrade re-patches this same child's spec with
+	// each new hop's targetVersion, but Server-Side Apply never touches
+	// .status (a separate subresource) - so a child that completed a
+	// previous hop is still sitting in status.phase=Complete with that
+	// hop's stale NodeProgress. Detect that and reset before the phase
+	// switch below, otherwise a completed child never picks up the next
+	// hop at all.
+	if needsReset(&ng) {
+		log.Info("group previously completed a different target version, resetting for the new hop",
+			"previousTarget", ng.Status.NodeProgress[0].ToVersion, "newTarget", ng.Spec.TargetVersion)
+		ng.Status.Phase = ""
+		ng.Status.NodeProgress = nil
+		ng.Status.UpgradedNodes = 0
+		return ctrl.Result{Requeue: true}, r.Status().Update(ctx, &ng)
+	}
+
 	switch ng.Status.Phase {
 	case "", upgradev1alpha1.NGPending:
 		return r.reconcilePending(ctx, &ng)
@@ -99,15 +118,20 @@ func (r *NodeGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Req
 func setNGPausedCondition(ng *upgradev1alpha1.NodeGroupUpgrade) bool {
 	status := metav1.ConditionFalse
 	reason := "NotPaused"
+	message := "reflects spec.paused"
 	if ng.Spec.Paused {
 		status = metav1.ConditionTrue
 		reason = "UserRequested"
+		if explanation, ok := ng.Annotations[pausedReasonAnnotation]; ok {
+			reason = "HeuristicClassification"
+			message = explanation
+		}
 	}
 	return meta.SetStatusCondition(&ng.Status.Conditions, metav1.Condition{
 		Type:    pausedConditionType,
 		Status:  status,
 		Reason:  reason,
-		Message: "reflects spec.paused",
+		Message: message,
 	})
 }
 
@@ -128,6 +152,21 @@ func initNodeProgress(nodes []string, targetVersion string) []upgradev1alpha1.No
 		})
 	}
 	return progress
+}
+
+// needsReset reports whether a Complete child is stale relative to its own
+// spec: initNodeProgress sets every node's ToVersion uniformly from
+// spec.targetVersion at the time a hop starts, so NodeProgress[0].ToVersion
+// reflects whichever hop was last completed. A mismatch against the
+// current spec.targetVersion means a new hop has begun.
+func needsReset(ng *upgradev1alpha1.NodeGroupUpgrade) bool {
+	if ng.Status.Phase != upgradev1alpha1.NGComplete {
+		return false
+	}
+	if len(ng.Status.NodeProgress) == 0 {
+		return false
+	}
+	return ng.Status.NodeProgress[0].ToVersion != ng.Spec.TargetVersion
 }
 
 // SetupWithManager sets up the controller with the Manager.

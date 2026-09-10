@@ -5,6 +5,7 @@ metadata:
   name: manager-role
 rules:
 - nonResourceURLs:
+  - /healthz/etcd
   - /version
   verbs:
   - get

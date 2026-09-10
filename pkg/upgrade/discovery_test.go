@@ -217,3 +217,77 @@ func TestDiscoverGroups_ScopeFiltersNodes(t *testing.T) {
 		t.Fatalf("got %+v, want exactly node in-scope", groups)
 	}
 }
+
+func nodeWithVersion(name, kubeletVersion string) corev1.Node {
+	return corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status: corev1.NodeStatus{
+			NodeInfo: corev1.NodeSystemInfo{KubeletVersion: kubeletVersion},
+		},
+	}
+}
+
+// TestGroupCurrentVersion covers the bug found via real-cluster testing:
+// a group's own current version must come from its actual member nodes,
+// not the apiserver's version - a group that started behind the rest of
+// the cluster (e.g. a previous upgrade paused partway through) has its
+// own, different current version.
+func TestGroupCurrentVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		nodes   []corev1.Node
+		group   DiscoveredGroup
+		want    string
+		wantErr bool
+	}{
+		{
+			name:  "single node",
+			nodes: []corev1.Node{nodeWithVersion("worker-1", "v1.29.15")},
+			group: DiscoveredGroup{Name: "workers", Nodes: []string{"worker-1"}},
+			want:  "v1.29.15",
+		},
+		{
+			name: "mixed-version group: returns the oldest, not an arbitrary one",
+			nodes: []corev1.Node{
+				nodeWithVersion("worker-1", "v1.29.15"),
+				nodeWithVersion("worker-2", "v1.28.15"),
+				nodeWithVersion("worker-3", "v1.29.15"),
+			},
+			group: DiscoveredGroup{Name: "workers", Nodes: []string{"worker-1", "worker-2", "worker-3"}},
+			want:  "v1.28.15",
+		},
+		{
+			name: "ignores nodes outside the group",
+			nodes: []corev1.Node{
+				nodeWithVersion("worker-1", "v1.29.15"),
+				nodeWithVersion("other-group-node", "v1.20.0"),
+			},
+			group: DiscoveredGroup{Name: "workers", Nodes: []string{"worker-1"}},
+			want:  "v1.29.15",
+		},
+		{
+			name:    "no member nodes found in the live node list",
+			nodes:   []corev1.Node{nodeWithVersion("worker-1", "v1.29.15")},
+			group:   DiscoveredGroup{Name: "workers", Nodes: []string{"missing-node"}},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := GroupCurrentVersion(tt.nodes, tt.group)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil (result=%q)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

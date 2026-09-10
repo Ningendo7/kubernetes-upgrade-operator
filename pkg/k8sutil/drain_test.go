@@ -18,6 +18,7 @@ package k8sutil
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -59,6 +60,17 @@ func testPod(name string) *corev1.Pod {
 	}
 }
 
+func podState(t *testing.T, result DrainResult, name string) PodStatus {
+	t.Helper()
+	for _, p := range result.Pods {
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("no PodStatus found for pod %q in %+v", name, result.Pods)
+	return PodStatus{}
+}
+
 func TestDrainNode_EvictsOrdinaryPod(t *testing.T) {
 	ctx := context.Background()
 	pod := testPod("app-1")
@@ -68,11 +80,14 @@ func TestDrainNode_EvictsOrdinaryPod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainNode: %v", err)
 	}
-	if result.Remaining != 1 {
-		t.Fatalf("Remaining = %d, want 1", result.Remaining)
+	if result.Remaining() != 1 {
+		t.Fatalf("Remaining() = %d, want 1", result.Remaining())
 	}
-	if len(result.Blocked) != 0 {
-		t.Fatalf("Blocked = %+v, want none", result.Blocked)
+	if len(result.Blocked()) != 0 {
+		t.Fatalf("Blocked() = %+v, want none", result.Blocked())
+	}
+	if state := podState(t, result, "app-1").State; state != PodDrainEvicting {
+		t.Errorf("expected app-1 to be Evicting, got %v", state)
 	}
 
 	var got corev1.Pod
@@ -92,8 +107,11 @@ func TestDrainNode_SkipsDaemonSetPod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainNode: %v", err)
 	}
-	if result.Remaining != 0 {
-		t.Fatalf("Remaining = %d, want 0 (daemonset pod should be skipped)", result.Remaining)
+	if result.Remaining() != 0 {
+		t.Fatalf("Remaining() = %d, want 0 (daemonset pod should be skipped)", result.Remaining())
+	}
+	if state := podState(t, result, "ds-pod").State; state != PodDrainSkipped {
+		t.Errorf("expected ds-pod to be Skipped, got %v", state)
 	}
 
 	var got corev1.Pod
@@ -112,8 +130,11 @@ func TestDrainNode_BlocksOnEmptyDirWhenNotAllowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainNode: %v", err)
 	}
-	if result.Remaining != 1 || len(result.Blocked) != 1 {
-		t.Fatalf("got Remaining=%d Blocked=%+v, want 1 remaining and 1 blocked", result.Remaining, result.Blocked)
+	if result.Remaining() != 1 || len(result.Blocked()) != 1 {
+		t.Fatalf("got Remaining()=%d Blocked()=%+v, want 1 remaining and 1 blocked", result.Remaining(), result.Blocked())
+	}
+	if reason := podState(t, result, "stateful-ish").Reason; reason == "" {
+		t.Errorf("expected a non-empty reason explaining the block")
 	}
 
 	var got corev1.Pod
@@ -139,12 +160,54 @@ func TestDrainNode_BlockedByPDBIsNotAFatalError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DrainNode should not return a hard error when eviction is PDB-blocked: %v", err)
 	}
-	if result.Remaining != 1 || len(result.Blocked) != 1 {
-		t.Fatalf("got Remaining=%d Blocked=%+v, want 1 remaining and 1 blocked", result.Remaining, result.Blocked)
+	if result.Remaining() != 1 || len(result.Blocked()) != 1 {
+		t.Fatalf("got Remaining()=%d Blocked()=%+v, want 1 remaining and 1 blocked", result.Remaining(), result.Blocked())
 	}
 
 	var got corev1.Pod
 	if err := c.Get(ctx, client.ObjectKey{Namespace: "default", Name: "guarded"}, &got); err != nil {
 		t.Fatalf("expected pod to remain since eviction was blocked: %v", err)
+	}
+}
+
+func TestDrainNode_AlreadyEvictingPodIsReportedNotReattempted(t *testing.T) {
+	ctx := context.Background()
+	pod := testPod("mid-eviction")
+	now := metav1.Now()
+	pod.DeletionTimestamp = &now
+	pod.Finalizers = []string{"kubernetes.io/pv-protection"} // any finalizer keeps the fake client from hard-deleting immediately
+	c := newDrainTestClient(t, interceptor.Funcs{}, pod)
+
+	result, err := DrainNode(ctx, c, "node-1", DrainOptions{IgnoreDaemonSets: true, DeleteEmptyDirData: true})
+	if err != nil {
+		t.Fatalf("DrainNode: %v", err)
+	}
+	if state := podState(t, result, "mid-eviction").State; state != PodDrainEvicting {
+		t.Errorf("expected an already-terminating pod to be reported Evicting, got %v", state)
+	}
+	if result.Remaining() != 1 {
+		t.Errorf("expected an in-progress eviction to still count toward Remaining, got %d", result.Remaining())
+	}
+}
+
+func TestDrainNode_GenericEvictionErrorIsReportedAndReturned(t *testing.T) {
+	ctx := context.Background()
+	pod := testPod("weird-failure")
+	funcs := interceptor.Funcs{
+		SubResourceCreate: func(ctx context.Context, cl client.Client, subResourceName string, obj client.Object, subResource client.Object, opts ...client.SubResourceCreateOption) error {
+			if subResourceName == "eviction" {
+				return errors.New("connection reset by peer")
+			}
+			return cl.SubResource(subResourceName).Create(ctx, obj, subResource, opts...)
+		},
+	}
+	c := newDrainTestClient(t, funcs, pod)
+
+	result, err := DrainNode(ctx, c, "node-1", DrainOptions{IgnoreDaemonSets: true, DeleteEmptyDirData: true})
+	if err == nil {
+		t.Fatalf("expected a genuine (non-PDB, non-NotFound) eviction error to be returned")
+	}
+	if state := podState(t, result, "weird-failure").State; state != PodDrainBlocked {
+		t.Errorf("expected the pod to still be reported as Blocked even on a hard error, got %v", state)
 	}
 }

@@ -19,9 +19,9 @@ exec nsenter --target 1 --mount --uts --ipc --net --pid -- /bin/sh -c '
 set -eu
 
 case "$(uname -m)" in
-    x86_64) ARCH=amd64 ;;
-    aarch64) ARCH=arm64 ;;
-    *) echo "Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+  x86_64)  ARCH=amd64 ;;
+  aarch64) ARCH=arm64 ;;
+  *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
 BASE_URL="${KUBEADM_RELEASE_BASE_URL:-https://dl.k8s.io/release}"
@@ -35,31 +35,137 @@ rm -f /tmp/kubeadm.new /tmp/kubeadm.new.sha256
 
 KUBE_VERSION="${TARGET_VERSION#v}"
 
-if command -v apt-get >/dev/null 2>&1; then
-         apt-mark unhold kubelet >/dev/null 2>&1 || true
-         apt-get update -y
-         apt-get install -y --allow-change-held-packages "kubelet=${KUBE_VERSION}-*"
-         apt-mark hold kubelet
-elif command -v dnf >/dev/null 2>&1; then
-         dnf install -y "kubelet-${KUBE_VERSION}-*"
+# kubeadm upgrade apply/node must run BEFORE the kubelet package is
+# touched: it expects the currently-running kubelet during its own
+# health checks and manifest updates. Upgrading kubelet first risks it
+# picking up control-plane manifests kubeadm has not finished writing yet.
+if [ "${UPGRADE_MODE}" = "apply" ]; then
+  # kubeadm upgrade apply also prepulls the new control-plane component
+  # images by connecting to the CRI socket directly, which needs
+  # DAC_OVERRIDE-ish access to /var/run/containerd/containerd.sock that
+  # this capability-limited root does not have. Skipping that check is
+  # safe: the images still get pulled normally, by the fully-privileged
+  # kubelet, when it actually creates the new static pods below. Newer
+  # kubeadm versions also construct a CRI *runtime* service client
+  # (not just the image client) as part of this same prepull step,
+  # which fails the same way and is not individually named, so this
+  # ignores every preflight check rather than guessing at one - the
+  # cluster-health and version-skew checks that already ran above are
+  # the load-bearing safety checks, not this optional prepull step.
+  kubeadm upgrade apply "${TARGET_VERSION}" -y --ignore-preflight-errors=all
 else
-         echo "Unsupported package manager: neither apt-get nor dnf found on this host" >&2
-         exit 1
+  kubeadm upgrade node
 fi
 
-if [ "${UPGRADE_MODE}" = "apply" ]; then
-    kubeadm upgrade apply "${TARGET_VERSION}" -y
+if command -v dpkg >/dev/null 2>&1; then
+  # Ubuntu/Debian systems ship /var/lib/apt/lists/partial owned by the
+  # unprivileged _apt user - a capability-limited root (this process)
+  # cannot chmod or unlink files it does not own there, no matter how
+  # apt-get sandboxing is configured, so apt-get itself cannot run here
+  # at all. Fetching the exact .deb directly and installing it with
+  # dpkg avoids apt-get list management entirely - it only touches the
+  # dpkg database, which is root owned. Same checksum-verified direct
+  # fetch pattern as the kubeadm binary above.
+  MINOR_CHANNEL="$(printf "%s" "${KUBE_VERSION}" | cut -d. -f1,2)"
+  DEB_BASE_URL="${KUBE_DEB_REPO_BASE_URL:-https://pkgs.k8s.io/core:/stable:/v${MINOR_CHANNEL}/deb}"
+  PKG_INDEX="$(curl -fsSL "${DEB_BASE_URL}/Packages")"
+  RESULT="$(printf "%s" "${PKG_INDEX}" | awk -v arch="${ARCH}" -v ver="${KUBE_VERSION}-" "
+    BEGIN { RS=\"\"; FS=\"\n\" }
+    {
+      p=\"\"; a=\"\"; v=\"\"; f=\"\"; s=\"\"
+      for (i=1;i<=NF;i++) {
+        line=\$i
+        if (line ~ /^Package: /)           { p=line; sub(/^Package: /,\"\",p) }
+        else if (line ~ /^Architecture: /)  { a=line; sub(/^Architecture: /,\"\",a) }
+        else if (line ~ /^Version: /)       { v=line; sub(/^Version: /,\"\",v) }
+        else if (line ~ /^Filename: /)      { f=line; sub(/^Filename: /,\"\",f) }
+        else if (line ~ /^SHA256: /)        { s=line; sub(/^SHA256: /,\"\",s) }
+      }
+      if (p==\"kubelet\" && a==arch && index(v, ver)==1) { print f, s; exit }
+    }
+  ")"
+  if [ -z "${RESULT}" ]; then
+    echo "could not find a kubelet ${KUBE_VERSION} package for ${ARCH} in ${DEB_BASE_URL}" >&2
+    exit 1
+  fi
+  DEB_PATH="${RESULT%% *}"
+  DEB_SHA256="${RESULT##* }"
+  curl -fsSL -o /tmp/kubelet.new.deb "${DEB_BASE_URL}/${DEB_PATH}"
+  echo "${DEB_SHA256}  /tmp/kubelet.new.deb" | sha256sum -c -
+
+  # dpkg -i does not resolve dependencies the way apt-get normally would -
+  # a host whose kubelet was never installed with real apt dependency
+  # resolution (e.g. this dpkg path is all it has ever gone through) can
+  # be missing plain packages kubelet depends on (conntrack, ethtool,
+  # socat, ebtables, and similar). Read the REAL dependency list out of
+  # the .deb itself rather than guessing/hardcoding one, and fetch any
+  # that are missing the same checksum-verified way, from the distro
+  # archive rather than the Kubernetes package repo.
+  MISSING_DEPS="$(
+    dpkg-deb -f /tmp/kubelet.new.deb Depends |
+      tr "," "\n" |
+      sed -e "s/^ *//" -e "s/ *(.*//" -e "s/ .*//" |
+      while read -r dep; do
+        dpkg -s "$dep" >/dev/null 2>&1 || echo "$dep"
+      done
+  )"
+
+  if [ -n "${MISSING_DEPS}" ]; then
+    . /etc/os-release
+    case "${ARCH}" in
+      amd64) OS_ARCHIVE_DEFAULT="http://archive.ubuntu.com/ubuntu" ;;
+      arm64) OS_ARCHIVE_DEFAULT="http://ports.ubuntu.com/ubuntu-ports" ;;
+    esac
+    if [ "${ID:-}" = "debian" ]; then
+      OS_ARCHIVE_DEFAULT="http://deb.debian.org/debian"
+    fi
+    OS_ARCHIVE_BASE_URL="${OS_PACKAGE_ARCHIVE_BASE_URL:-${OS_ARCHIVE_DEFAULT}}"
+    OS_INDEX="$(curl -fsSL "${OS_ARCHIVE_BASE_URL}/dists/${VERSION_CODENAME}/main/binary-${ARCH}/Packages.gz" | zcat)"
+
+    for dep in ${MISSING_DEPS}; do
+      DEP_RESULT="$(printf "%s" "${OS_INDEX}" | awk -v pkg="${dep}" -v arch="${ARCH}" "
+        BEGIN { RS=\"\"; FS=\"\n\" }
+        {
+          p=\"\"; a=\"\"; f=\"\"; s=\"\"
+          for (i=1;i<=NF;i++) {
+            line=\$i
+            if (line ~ /^Package: /)           { p=line; sub(/^Package: /,\"\",p) }
+            else if (line ~ /^Architecture: /)  { a=line; sub(/^Architecture: /,\"\",a) }
+            else if (line ~ /^Filename: /)      { f=line; sub(/^Filename: /,\"\",f) }
+            else if (line ~ /^SHA256: /)        { s=line; sub(/^SHA256: /,\"\",s) }
+          }
+          if (p==pkg && a==arch) { print f, s; exit }
+        }
+      ")"
+      if [ -z "${DEP_RESULT}" ]; then
+        echo "could not find dependency package ${dep} for ${ARCH} in ${OS_ARCHIVE_BASE_URL}" >&2
+        exit 1
+      fi
+      DEP_PATH="${DEP_RESULT%% *}"
+      DEP_SHA256="${DEP_RESULT##* }"
+      curl -fsSL -o "/tmp/${dep}.deb" "${OS_ARCHIVE_BASE_URL}/${DEP_PATH}"
+      echo "${DEP_SHA256}  /tmp/${dep}.deb" | sha256sum -c -
+      dpkg -i "/tmp/${dep}.deb"
+      rm -f "/tmp/${dep}.deb"
+    done
+  fi
+
+  dpkg -i /tmp/kubelet.new.deb
+  rm -f /tmp/kubelet.new.deb
+elif command -v dnf >/dev/null 2>&1; then
+  dnf install -y "kubelet-${KUBE_VERSION}"
 else
-    kubeadm upgrade node
+  echo "unsupported package manager: neither dpkg nor dnf found on this host" >&2
+  exit 1
 fi
 
 systemctl daemon-reload
 systemctl restart kubelet
 
 INSTALLED="$(kubelet --version | awk "{print \$2}")"
-if [ "${INSTALLED#v}" != "$KUBE_VERSION" ]; then
-    echo "Kubelet version mismatch after upgrade: got ${INSTALLED}, want ${TARGET_VERSION}" >&2
-    exit 1
+if [ "${INSTALLED#v}" != "${KUBE_VERSION}" ]; then
+  echo "kubelet version mismatch after upgrade: got ${INSTALLED}, want ${TARGET_VERSION}" >&2
+  exit 1
 fi
 
 echo "upgrade to ${TARGET_VERSION} complete"

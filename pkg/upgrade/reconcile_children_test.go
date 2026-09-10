@@ -87,6 +87,21 @@ func TestResolveStrategy(t *testing.T) {
 			group: DiscoveredGroup{Role: upgradev1alpha1.RoleWorker, Provider: upgradev1alpha1.ProviderGeneric},
 			want:  upgradev1alpha1.StrategyInPlace,
 		},
+		{
+			name:     "generic rejects a Replace override without acknowledgment",
+			group:    DiscoveredGroup{Role: upgradev1alpha1.RoleWorker, Provider: upgradev1alpha1.ProviderGeneric},
+			override: &upgradev1alpha1.NodeGroupOverride{Strategy: strategyPtr(upgradev1alpha1.StrategyReplace)},
+			want:     upgradev1alpha1.StrategyInPlace,
+		},
+		{
+			name:  "generic allows a Replace override once acknowledged",
+			group: DiscoveredGroup{Role: upgradev1alpha1.RoleWorker, Provider: upgradev1alpha1.ProviderGeneric},
+			override: &upgradev1alpha1.NodeGroupOverride{
+				Strategy:               strategyPtr(upgradev1alpha1.StrategyReplace),
+				AcknowledgeReplaceRisk: true,
+			},
+			want: upgradev1alpha1.StrategyReplace,
+		},
 	}
 
 	for _, tt := range tests {

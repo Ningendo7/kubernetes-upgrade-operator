@@ -95,6 +95,14 @@ type NodeGroupOverride struct {
 	// skip excludes this group from the current upgrade run entirely.
 	// +optional
 	Skip *bool `json:"skip,omitempty"`
+
+	// acknowledgeReplaceRisk must be true to allow strategy=Replace for a
+	// Generic-provider group. Generic means the operator has no verified
+	// mechanism confirming a deleted node will actually be recreated -
+	// unlike EKS/ASG/LKE, where Replace is backed by a real, known
+	// mechanism. Ignored for all other providers.
+	// +optional
+	AcknowledgeReplaceRisk bool `json:"acknowledgeReplaceRisk,omitempty"`
 }
 
 // SafetyPolicy holds cluster-wide guardrails.

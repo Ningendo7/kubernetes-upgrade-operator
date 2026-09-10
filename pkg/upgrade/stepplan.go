@@ -89,3 +89,48 @@ func ComputeStepPlan(current, target string, allowDowngrade bool,
 
 	return steps, nil
 }
+
+// NextGroupTarget computes the version a specific node group should move
+// toward for the current reconcile pass. groupCurrent is that group's own
+// actual current version (see GroupCurrentVersion) - which can differ from
+// hopTarget in EITHER direction: a group that started behind the rest of
+// the cluster (e.g. a previous upgrade paused partway through, or scope
+// excluded it last time) can lag by more than one minor, while a group
+// that already finished an earlier hop (or the whole upgrade) on a prior
+// pass can be AHEAD of this hop's target. hopTarget is meant to be a
+// single minor hop from wherever the cluster overall started (see
+// ComputeStepPlan), but that assumption does not hold for every group
+// individually, so this clamps: a group strictly AHEAD of hopTarget stays
+// exactly where it is (returning hopTarget here would be a regression -
+// telling an already-upgraded group to downgrade); a group exactly at
+// hopTarget gets hopTarget back (a trivial no-op); a group within one
+// minor of it gets hopTarget directly (the common case); a group further
+// behind gets its own earlier, safe one-minor waypoint instead of jumping
+// straight to hopTarget, and will need additional passes to catch all the
+// way up.
+func NextGroupTarget(groupCurrent, hopTarget string) (string, error) {
+	cmp, err := k8sutil.CompareVersions(groupCurrent, hopTarget)
+	if err != nil {
+		return "", err
+	}
+	if cmp > 0 {
+		return groupCurrent, nil
+	}
+	if cmp == 0 {
+		return hopTarget, nil
+	}
+
+	diff, err := k8sutil.MinorDiff(groupCurrent, hopTarget)
+	if err != nil {
+		return "", err
+	}
+	if diff <= 1 {
+		return hopTarget, nil
+	}
+
+	cv, err := k8sutil.ParseVersion(groupCurrent)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("v%d.%d.0", cv.Major(), cv.Minor()+1), nil
+}

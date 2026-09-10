@@ -53,7 +53,55 @@ func (a *Adapter) Precheck(ctx context.Context, uc provider.UpgradeContext) (boo
 	if err != nil {
 		return false, "", err
 	}
-	return health.Healthy, health.Reason, nil
+	if !health.Healthy {
+		return false, health.Reason, nil
+	}
+
+	if uc.Group != nil && uc.Group.Spec.Role == upgradev1alpha1.RoleControlPlane {
+		if uc.RestConfig == nil {
+			// A missing RestConfig here means a real wiring gap, not an
+			// expected runtime state - fail loudly rather than silently
+			// skipping a safety check for the riskiest phase we have.
+			return false, "", fmt.Errorf("cannot verify etcd quorum: no RestConfig configured for the kubeadm adapter")
+		}
+		cpNodes, err := k8sutil.ListControlPlaneNodes(ctx, uc.Client)
+		if err != nil {
+			return false, "", err
+		}
+
+		// Two independent etcd-health signals, both required: the
+		// apiserver-proxy check (each apiserver's own etcd client, using
+		// its apiserver-etcd-client cert) and a real etcdctl check (each
+		// nodes own local member, using a completely different
+		// healthcheck-client cert and code path). Neither is a superset
+		// of the other - something wrong with one specific cert/client
+		// path would not necessarily show up in the other - so both
+		// majorities must pass, on top of the cheap Ready-proxy above.
+		apiserverQuorum, err := k8sutil.CheckEtcdQuorumViaAPIServers(ctx, uc.RestConfig, cpNodes)
+		if err != nil {
+			return false, "", err
+		}
+		if !apiserverQuorum.Healthy {
+			return false, apiserverQuorum.Reason, nil
+		}
+
+		etcdVersion, err := k8sutil.GetRunningEtcdVersion(ctx, uc.Client)
+		if err != nil {
+			return false, "", fmt.Errorf("determining running etcd version for etcdctl health check: %w", err)
+		}
+		done, etcdctlQuorum, err := CheckEtcdQuorumViaEtcdctl(ctx, uc.Client, cpNodes, etcdVersion)
+		if err != nil {
+			return false, "", err
+		}
+		if !done {
+			return false, "waiting for etcdctl health check to complete", nil
+		}
+		if !etcdctlQuorum.Healthy {
+			return false, etcdctlQuorum.Reason, nil
+		}
+	}
+
+	return true, "", nil
 }
 
 // BeginBatch creates one executor Job per node in the batch. At most one

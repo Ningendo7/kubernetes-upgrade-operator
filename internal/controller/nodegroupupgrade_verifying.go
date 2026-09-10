@@ -72,6 +72,7 @@ func (r *NodeGroupUpgradeReconciler) reconcileVerifying(ctx context.Context, ng 
 		Log:           log,
 		Group:         ng,
 		TargetVersion: ng.Spec.TargetVersion,
+		RestConfig:    r.RestConfig,
 	}
 
 	verified, reason, err := adapter.Verify(ctx, uc)

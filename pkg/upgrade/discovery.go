@@ -189,3 +189,79 @@ func regionFromAWSProviderID(providerID string) string {
 	az := parts[0]
 	return az[:len(az)-1] // drop the trailing zone letter, e.g. "us-east-1a" -> "us-east-1"
 }
+
+// GroupCurrentVersion returns the oldest kubelet version reported among
+// group's own member nodes, using nodes as the authoritative source of
+// live Node objects. This is deliberately per-group, not cluster-wide: the
+// apiserver's own version (what the parent KubernetesUpgrade's StepPlan is
+// computed from) is not necessarily this group's actual current version -
+// e.g. this group started behind the rest of the cluster, or a previous
+// upgrade paused partway through. Taking the oldest node in the group
+// (rather than the newest, or an arbitrary one) is the conservative choice
+// if the group is itself internally mixed-version.
+func GroupCurrentVersion(nodes []corev1.Node, group DiscoveredGroup) (string, error) {
+	byName := make(map[string]string, len(nodes))
+	for i := range nodes {
+		byName[nodes[i].Name] = nodes[i].Status.NodeInfo.KubeletVersion
+	}
+
+	var oldest string
+	for _, name := range group.Nodes {
+		v := byName[name]
+		if v == "" {
+			continue
+		}
+		if oldest == "" {
+			oldest = v
+			continue
+		}
+		cmp, err := k8sutil.CompareVersions(v, oldest)
+		if err != nil {
+			return "", fmt.Errorf("comparing versions for group %q: %w", group.Name, err)
+		}
+		if cmp < 0 {
+			oldest = v
+		}
+	}
+	if oldest == "" {
+		return "", fmt.Errorf("group %q has no member nodes with a known kubelet version", group.Name)
+	}
+	return oldest, nil
+}
+
+// OldestVersionAcrossGroups returns the oldest kubelet version reported
+// across ALL of groups' member nodes combined. This is what a
+// KubernetesUpgrade's step plan should actually be computed from - the
+// apiserver's own version is not necessarily any specific groups actual
+// version (see GroupCurrentVersion), and is not necessarily the oldest
+// thing in the fleet either: a group that started behind the rest of the
+// cluster is exactly the case that must not be missed here, or a
+// KubernetesUpgrade whose target already matches the apiservers version
+// would short-circuit straight to Complete without ever looking at a
+// lagging group at all. A group that cannot report a version (no member
+// nodes with known kubelet versions) is skipped rather than failing the
+// whole computation.
+func OldestVersionAcrossGroups(nodes []corev1.Node, groups []DiscoveredGroup) (string, error) {
+	var oldest string
+	for _, g := range groups {
+		v, err := GroupCurrentVersion(nodes, g)
+		if err != nil {
+			continue
+		}
+		if oldest == "" {
+			oldest = v
+			continue
+		}
+		cmp, err := k8sutil.CompareVersions(v, oldest)
+		if err != nil {
+			return "", fmt.Errorf("comparing versions across groups: %w", err)
+		}
+		if cmp < 0 {
+			oldest = v
+		}
+	}
+	if oldest == "" {
+		return "", fmt.Errorf("no groups with a known kubelet version")
+	}
+	return oldest, nil
+}
