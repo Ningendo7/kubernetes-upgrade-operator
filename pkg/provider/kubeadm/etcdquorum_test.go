@@ -27,7 +27,7 @@ import (
 )
 
 func TestBuildEtcdctlHealthCheckJob_HardenedAndNarrower(t *testing.T) {
-	job := buildEtcdctlHealthCheckJob("cp-1", "v3.5.24")
+	job := buildEtcdctlHealthCheckJob("cp-1", "v3.5.24", "")
 	pod := job.Spec.Template.Spec
 	container := pod.Containers[0]
 
@@ -83,11 +83,7 @@ func TestCheckEtcdQuorumViaEtcdctl_NoNodesTriviallyHealthy(t *testing.T) {
 
 func TestCheckEtcdQuorumViaEtcdctl_CreatesJobsAndWaits(t *testing.T) {
 	c := newAdapterTestClient()
-	nodes := []corev1.Node{
-		{ObjectMeta: metav1.ObjectMeta{Name: "cp-1"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "cp-2"}},
-		{ObjectMeta: metav1.ObjectMeta{Name: "cp-3"}},
-	}
+	nodes := []corev1.Node{testNode("cp-1"), testNode("cp-2"), testNode("cp-3")}
 
 	done, _, err := CheckEtcdQuorumViaEtcdctl(context.Background(), c, nodes, "v3.5.24")
 	if err != nil {

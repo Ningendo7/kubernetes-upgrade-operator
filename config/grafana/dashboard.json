@@ -1,0 +1,183 @@
+{
+  "title": "Kubernetes Upgrade Operator",
+  "uid": "kuo-overview",
+  "editable": true,
+  "schemaVersion": 39,
+  "timezone": "",
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {}
+      }
+    ]
+  },
+  "panels": [
+    {
+      "type": "row",
+      "title": "Fleet state",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "type": "stat",
+      "title": "KubernetesUpgrades by phase",
+      "description": "Live count of KubernetesUpgrade objects in each phase. Failed/Paused here always mean a human is needed.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 10, "x": 0, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "textMode": "value_and_name" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "Failed|Paused" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      },
+      "targets": [
+        { "expr": "count by (phase) (kuo_kubernetesupgrade_phase_info)", "legendFormat": "{{phase}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "table",
+      "title": "Active upgrades",
+      "description": "Every live KubernetesUpgrade, its current phase, and how long it has been there.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 14, "x": 10, "y": 1 },
+      "options": { "showHeader": true },
+      "targets": [
+        { "expr": "time() - kuo_kubernetesupgrade_phase_start_timestamp_seconds", "format": "table", "instant": true, "refId": "A" },
+        { "expr": "kuo_kubernetesupgrade_phase_info", "format": "table", "instant": true, "refId": "B" }
+      ],
+      "transformations": [
+        { "id": "merge", "options": {} },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "__name__": true, "Value #B": true, "job": true, "instance": true, "container": true, "endpoint": true, "namespace 2": true, "name 2": true },
+            "renameByName": { "Value #A": "seconds in phase", "namespace 1": "namespace", "name 1": "name" }
+          }
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Upgrade lease held for",
+      "description": "How long the cluster-wide mutual-exclusion lease has been held. Only one upgrade runs at a time. Stale between upgrades - read alongside 'Active upgrades'.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "expr": "time() - kuo_upgrade_lease_acquired_timestamp_seconds", "refId": "A" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Node progress",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 12 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Nodes by phase, per group",
+      "description": "kuo_nodegroup_nodes_by_phase - how many nodes remain to upgrade in each group, and whether any ended up Failed.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 13 },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "bars", "stacking": { "mode": "normal" }, "fillOpacity": 60 } }
+      },
+      "targets": [
+        { "expr": "kuo_nodegroup_nodes_by_phase", "legendFormat": "{{kubernetesupgrade}}/{{nodegroup}} - {{phase}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Executor Jobs (highest-risk operation)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Executor Job rate by outcome",
+      "description": "rate(kuo_executor_job_total[5m]) - the privileged host-mutating/host-reading Jobs. A sustained 'failed' rate is a critical alert.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 22 },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "ops" },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*failed.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      },
+      "targets": [
+        { "expr": "sum by (provider, kind, outcome) (rate(kuo_executor_job_total[5m]))", "legendFormat": "{{provider}}/{{kind}} {{outcome}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Failed executor Jobs (24h)",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 22 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "fieldConfig": {
+        "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } }
+      },
+      "targets": [
+        { "expr": "sum by (provider, kind) (increase(kuo_executor_job_total{outcome=\"failed\"}[24h]))", "legendFormat": "{{provider}}/{{kind}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "etcd quorum & adapter health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 }
+    },
+    {
+      "type": "state-timeline",
+      "title": "etcd quorum check result",
+      "description": "kuo_etcd_quorum_healthy by method. Brief dips during a control-plane node's own apiserver restart are normal; a sustained 0 is a critical alert.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 31 },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "unhealthy", "color": "red" }, "1": { "text": "healthy", "color": "green" } } }
+          ]
+        }
+      },
+      "options": { "mergeValues": true },
+      "targets": [
+        { "expr": "kuo_etcd_quorum_healthy", "legendFormat": "{{method}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Adapter operation rate by outcome",
+      "description": "rate(kuo_adapter_operation_total[5m]). 'not_ready' is normal (Precheck retrying); a sustained 'error' rate is a warning alert.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 31 },
+      "fieldConfig": {
+        "defaults": { "custom": { "drawStyle": "line", "fillOpacity": 10 }, "unit": "ops" },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": ".*error.*" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] }
+        ]
+      },
+      "targets": [
+        { "expr": "sum by (provider, operation, outcome) (rate(kuo_adapter_operation_total[5m]))", "legendFormat": "{{provider}}/{{operation}} {{outcome}}", "refId": "A" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Adapter operation latency (p50 / p99)",
+      "description": "kuo_adapter_operation_duration_seconds. A p99 creeping up is an early warning before Prechecks/Polls start timing out.",
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 38 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum by (le, provider, operation) (rate(kuo_adapter_operation_duration_seconds_bucket[10m])))", "legendFormat": "p50 {{provider}}/{{operation}}", "refId": "A" },
+        { "expr": "histogram_quantile(0.99, sum by (le, provider, operation) (rate(kuo_adapter_operation_duration_seconds_bucket[10m])))", "legendFormat": "p99 {{provider}}/{{operation}}", "refId": "B" }
+      ]
+    }
+  ]
+}

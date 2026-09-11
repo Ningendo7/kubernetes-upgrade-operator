@@ -25,7 +25,7 @@ import (
 )
 
 func (r *KubernetesUpgradeReconciler) reconcilePending(ctx context.Context, ku *upgradev1alpha1.KubernetesUpgrade) (ctrl.Result, error) {
-	ku.Status.Phase = upgradev1alpha1.PhaseDiscovering
+	setKUPhase(ku, upgradev1alpha1.PhaseDiscovering)
 	ku.Status.ObservedGeneration = ku.Generation
 	if err := r.Status().Update(ctx, ku); err != nil {
 		return ctrl.Result{}, err

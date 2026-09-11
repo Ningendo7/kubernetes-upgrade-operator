@@ -27,9 +27,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/checksums"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
+	obs "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/observability"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider"
 )
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
+}
 
 // Adapter implements provider.Adapter for on-prem/bare-metal kubeadm
 // clusters, upgrading nodes in place via a privileged per-node Job.
@@ -81,6 +90,7 @@ func (a *Adapter) Precheck(ctx context.Context, uc provider.UpgradeContext) (boo
 		if err != nil {
 			return false, "", err
 		}
+		obs.EtcdQuorumHealthy.WithLabelValues("apiserver_proxy").Set(boolToFloat(apiserverQuorum.Healthy))
 		if !apiserverQuorum.Healthy {
 			return false, apiserverQuorum.Reason, nil
 		}
@@ -96,6 +106,7 @@ func (a *Adapter) Precheck(ctx context.Context, uc provider.UpgradeContext) (boo
 		if !done {
 			return false, "waiting for etcdctl health check to complete", nil
 		}
+		obs.EtcdQuorumHealthy.WithLabelValues("etcdctl").Set(boolToFloat(etcdctlQuorum.Healthy))
 		if !etcdctlQuorum.Healthy {
 			return false, etcdctlQuorum.Reason, nil
 		}
@@ -117,7 +128,13 @@ func (a *Adapter) BeginBatch(ctx context.Context, uc provider.UpgradeContext, ba
 		useApply := applyAvailable
 		applyAvailable = false // at most one node claims "apply", even across a multi-node batch
 
-		job := buildUpgradeJob(node.Name, uc.TargetVersion, useApply)
+		sums, err := pinnedSumsFor(uc.TargetVersion, node)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+
+		job := buildUpgradeJob(node.Name, uc.TargetVersion, useApply, sums)
 		if err := uc.Client.Create(ctx, job); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				continue // already started this pass or a prior one; idempotent
@@ -126,6 +143,23 @@ func (a *Adapter) BeginBatch(ctx context.Context, uc provider.UpgradeContext, ba
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// pinnedSumsFor resolves the pinned kubeadm/kubelet checksums for the
+// target version on the given node's architecture. A version missing from
+// the table is a hard error - the caller must not create a Job that would
+// then fetch something it cannot authenticate - unless AllowUnpinnedChecksums
+// is set, in which case empty values flow through and the script falls
+// back to a fetch-alongside checksum.
+func pinnedSumsFor(targetVersion string, node corev1.Node) (pinnedChecksums, error) {
+	set, err := checksums.LookupKube(targetVersion, node.Status.NodeInfo.Architecture)
+	if err != nil {
+		if AllowUnpinnedChecksums {
+			return pinnedChecksums{}, nil
+		}
+		return pinnedChecksums{}, fmt.Errorf("refusing to upgrade node %q: %w", node.Name, err)
+	}
+	return pinnedChecksums{kubeadm: set.Kubeadm, kubeletDeb: set.KubeletDeb}, nil
 }
 
 func isFirstControlPlaneUpgrade(group *upgradev1alpha1.NodeGroupUpgrade, targetVersion string) bool {

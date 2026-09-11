@@ -31,6 +31,16 @@ import (
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider"
 )
 
+// testNode returns a Node shaped like a real one from a live cluster -
+// in particular with Status.NodeInfo.Architecture populated, which
+// BeginBatch needs to look up the pinned artifact checksums.
+func testNode(name string) corev1.Node {
+	return corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{Architecture: "amd64"}},
+	}
+}
+
 func newAdapterTestClient(objs ...client.Object) client.Client {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -88,7 +98,7 @@ func TestAdapter_BeginBatch_FirstControlPlaneNodeUsesApply(t *testing.T) {
 	group := &upgradev1alpha1.NodeGroupUpgrade{Spec: upgradev1alpha1.NodeGroupUpgradeSpec{Role: upgradev1alpha1.RoleControlPlane}}
 	uc := provider.UpgradeContext{Client: c, Group: group, TargetVersion: "v1.30.0"}
 
-	err := a.BeginBatch(context.Background(), uc, []corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "cp-1"}}})
+	err := a.BeginBatch(context.Background(), uc, []corev1.Node{testNode("cp-1")})
 	if err != nil {
 		t.Fatalf("BeginBatch: %v", err)
 	}
@@ -112,7 +122,7 @@ func TestAdapter_BeginBatch_SubsequentControlPlaneNodeUsesNode(t *testing.T) {
 	}
 	uc := provider.UpgradeContext{Client: c, Group: group, TargetVersion: "v1.30.0"}
 
-	err := a.BeginBatch(context.Background(), uc, []corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "cp-2"}}})
+	err := a.BeginBatch(context.Background(), uc, []corev1.Node{testNode("cp-2")})
 	if err != nil {
 		t.Fatalf("BeginBatch: %v", err)
 	}
@@ -128,7 +138,7 @@ func TestAdapter_BeginBatch_WorkerNeverUsesApply(t *testing.T) {
 	group := &upgradev1alpha1.NodeGroupUpgrade{Spec: upgradev1alpha1.NodeGroupUpgradeSpec{Role: upgradev1alpha1.RoleWorker}}
 	uc := provider.UpgradeContext{Client: c, Group: group, TargetVersion: "v1.30.0"}
 
-	err := a.BeginBatch(context.Background(), uc, []corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}}})
+	err := a.BeginBatch(context.Background(), uc, []corev1.Node{testNode("worker-1")})
 	if err != nil {
 		t.Fatalf("BeginBatch: %v", err)
 	}
@@ -143,7 +153,7 @@ func TestAdapter_BeginBatch_IdempotentOnRetry(t *testing.T) {
 	a := &Adapter{}
 	group := &upgradev1alpha1.NodeGroupUpgrade{Spec: upgradev1alpha1.NodeGroupUpgradeSpec{Role: upgradev1alpha1.RoleWorker}}
 	uc := provider.UpgradeContext{Client: c, Group: group, TargetVersion: "v1.30.0"}
-	batch := []corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}}}
+	batch := []corev1.Node{testNode("worker-1")}
 
 	if err := a.BeginBatch(context.Background(), uc, batch); err != nil {
 		t.Fatalf("first BeginBatch: %v", err)

@@ -27,7 +27,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/checksums"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
+	obs "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/observability"
 )
 
 // etcdctlCheckJobName deterministically names the per-node etcdctl health
@@ -49,7 +51,7 @@ func etcdctlCheckJobName(nodeName string) string {
 // (dropping it produces "reassociate to namespace ns/mnt failed:
 // Operation not permitted" even with SYS_ADMIN present) - so this only
 // narrows the namespace set (mount/net/pid, no uts/ipc), not capabilities.
-func buildEtcdctlHealthCheckJob(nodeName, etcdVersion string) *batchv1.Job {
+func buildEtcdctlHealthCheckJob(nodeName, etcdVersion, etcdctlSHA string) *batchv1.Job {
 	backoffLimit := int32(1)
 	// Deliberately shorter than the upgrade job's TTL: this check runs
 	// repeatedly (created fresh, deleted, and recreated on every retry
@@ -108,6 +110,14 @@ func buildEtcdctlHealthCheckJob(nodeName, etcdVersion string) *batchv1.Job {
 									Name:  "ETCD_VERSION",
 									Value: etcdVersion,
 								},
+								{
+									Name:  "ETCDCTL_SHA256",
+									Value: etcdctlSHA,
+								},
+								{
+									Name:  "ALLOW_UNPINNED_CHECKSUMS",
+									Value: boolEnv(AllowUnpinnedChecksums),
+								},
 							},
 							SecurityContext: &corev1.SecurityContext{
 								Capabilities: &corev1.Capabilities{
@@ -123,6 +133,20 @@ func buildEtcdctlHealthCheckJob(nodeName, etcdVersion string) *batchv1.Job {
 			},
 		},
 	}
+}
+
+// pinnedEtcdctlSHA resolves the pinned etcdctl tarball checksum for the
+// running etcd version on the given node's architecture. Same fail-closed
+// contract as pinnedSumsFor.
+func pinnedEtcdctlSHA(etcdVersion string, node corev1.Node) (string, error) {
+	set, err := checksums.LookupEtcd(etcdVersion, node.Status.NodeInfo.Architecture)
+	if err != nil {
+		if AllowUnpinnedChecksums {
+			return "", nil
+		}
+		return "", fmt.Errorf("refusing to run the etcd health check on node %q: %w", node.Name, err)
+	}
+	return set.EtcdctlTarball, nil
 }
 
 // CheckEtcdQuorumViaEtcdctl runs a real etcdctl health check against
@@ -148,7 +172,11 @@ func CheckEtcdQuorumViaEtcdctl(ctx context.Context, c client.Client, cpNodes []c
 		getErr := c.Get(ctx, key, &job)
 		switch {
 		case apierrors.IsNotFound(getErr):
-			newJob := buildEtcdctlHealthCheckJob(node.Name, etcdVersion)
+			etcdctlSHA, shaErr := pinnedEtcdctlSHA(etcdVersion, node)
+			if shaErr != nil {
+				return false, k8sutil.EtcdQuorumStatus{}, shaErr
+			}
+			newJob := buildEtcdctlHealthCheckJob(node.Name, etcdVersion, etcdctlSHA)
 			if createErr := c.Create(ctx, newJob); createErr != nil && !apierrors.IsAlreadyExists(createErr) {
 				return false, k8sutil.EtcdQuorumStatus{}, fmt.Errorf("creating etcdctl health check job for node %q: %w", node.Name, createErr)
 			}
@@ -158,11 +186,17 @@ func CheckEtcdQuorumViaEtcdctl(ctx context.Context, c client.Client, cpNodes []c
 			return false, k8sutil.EtcdQuorumStatus{}, fmt.Errorf("getting etcdctl health check job for node %q: %w", node.Name, getErr)
 		}
 
+		// Each Job's terminal state is observed exactly once here - the
+		// Delete right after means the next pass sees NotFound and starts
+		// a fresh one - so incrementing the counter here does not double
+		// count the way polling an undeleted Job would.
 		switch jobConditionState(&job) {
 		case jobComplete:
 			healthy++
+			obs.ExecutorJobTotal.WithLabelValues("Kubeadm", "etcd_healthcheck", "succeeded").Inc()
 			_ = c.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground))
 		case jobFailed:
+			obs.ExecutorJobTotal.WithLabelValues("Kubeadm", "etcd_healthcheck", "failed").Inc()
 			_ = c.Delete(ctx, &job, client.PropagationPolicy(metav1.DeletePropagationBackground))
 		default:
 			pending++

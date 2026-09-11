@@ -31,6 +31,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
+	obs "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/observability"
 )
 
 // KubernetesUpgradeReconciler reconciles a KubernetesUpgrade object
@@ -88,6 +89,16 @@ func (r *KubernetesUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if controllerutil.ContainsFinalizer(&ku, kubernetesUpgradeFinalizer) {
 			if err := r.releaseLease(ctx, holderID); err != nil {
 				return ctrl.Result{}, err
+			}
+			// This is the one place we know an upgrade is genuinely done
+			// with, not merely in a terminal phase - clear its metric
+			// series (and its children's) so short-lived, frequently
+			// recreated objects don't accumulate stale series forever.
+			obs.DeleteKubernetesUpgrade(ku.Namespace, ku.Name)
+			for _, g := range ku.Status.DiscoveredGroups {
+				// truncateLabelValue mirrors how buildDesiredChild stamps
+				// the group-name label the phase-count series are keyed by.
+				obs.DeleteNodeGroupUpgrade(ku.Namespace, ku.Name, truncateLabelValue(g.Name))
 			}
 			controllerutil.RemoveFinalizer(&ku, kubernetesUpgradeFinalizer)
 			if err := r.Update(ctx, &ku); err != nil {

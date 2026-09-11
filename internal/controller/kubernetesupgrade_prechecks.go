@@ -31,6 +31,7 @@ import (
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
+	obs "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/observability"
 )
 
 const (
@@ -53,7 +54,7 @@ func (r *KubernetesUpgradeReconciler) reconcilePrechecks(ctx context.Context, ku
 		}
 	}
 
-	ku.Status.Phase = nextPhaseAfterPrechecks(ku.Status.DiscoveredGroups)
+	setKUPhase(ku, nextPhaseAfterPrechecks(ku.Status.DiscoveredGroups))
 	if err := r.Status().Update(ctx, ku); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -100,6 +101,7 @@ func (r *KubernetesUpgradeReconciler) acquireLease(ctx context.Context, holderID
 			}
 			return false, createErr
 		}
+		obs.UpgradeLeaseAcquiredTimestampSeconds.SetToCurrentTime()
 		return true, nil
 	}
 	if err != nil {
@@ -114,6 +116,11 @@ func (r *KubernetesUpgradeReconciler) acquireLease(ctx context.Context, holderID
 		return false, nil // actively held by someone else
 	}
 
+	// isUs -> this is a renewal; anything else is a fresh acquire (of a
+	// stale or unheld lease), which is the only case the metric should
+	// move on, so "how long has this been held" stays meaningful.
+	freshAcquire := !isUs
+
 	lease.Spec.HolderIdentity = &holderID
 	lease.Spec.RenewTime = &now
 	if updateErr := r.Update(ctx, &lease); updateErr != nil {
@@ -121,6 +128,9 @@ func (r *KubernetesUpgradeReconciler) acquireLease(ctx context.Context, holderID
 			return false, nil // lost a race to claim/renew; try again next reconcile
 		}
 		return false, updateErr
+	}
+	if freshAcquire {
+		obs.UpgradeLeaseAcquiredTimestampSeconds.SetToCurrentTime()
 	}
 	return true, nil
 }

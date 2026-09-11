@@ -1,0 +1,121 @@
+# Alerting rules for the Kubernetes upgrade operator.
+#
+# Design intent: every rule here answers a specific operational question a
+# human would actually act on, and every `for:` clause is chosen to sit
+# out a known-normal transient rather than page on it. Things that are
+# normal and self-healing (a PDB-blocked drain, an adapter Precheck
+# reporting "not ready yet" and retrying, a single scrape catching the
+# apiserver mid-restart) are deliberately NOT alerts.
+#
+# `critical` = an upgrade cannot make progress without a human; this
+# operator never auto-recovers from these. `warning` = slow or degraded,
+# worth a look but not a page.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  labels:
+    app.kubernetes.io/name: kubernetes-upgrade-operator
+    app.kubernetes.io/managed-by: kustomize
+    prometheus: k8s
+    role: alert-rules
+  name: kubernetes-upgrade-operator-rules
+  namespace: system
+spec:
+  groups:
+    - name: kubernetes-upgrade-operator
+      rules:
+        - alert: KubernetesUpgradeFailedOrPaused
+          expr: kuo_kubernetesupgrade_phase_info{phase=~"Failed|Paused"} == 1
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "KubernetesUpgrade {{ $labels.namespace }}/{{ $labels.name }} is {{ $labels.phase }}"
+            description: >-
+              This operator does not auto-roll-back or auto-resume. A
+              {{ $labels.phase }} upgrade stays that way until a human
+              inspects it, resolves the cause, and either edits or deletes
+              the KubernetesUpgrade. Check its status.conditions and the
+              child NodeGroupUpgrade objects for the specific failure.
+
+        - alert: KubernetesUpgradeStalled
+          # Aging phase-start timestamp, excluding objects already in a
+          # terminal phase (Failed/Paused have their own alert above;
+          # Complete's timestamp keeps aging harmlessly).
+          expr: |
+            (time() - kuo_kubernetesupgrade_phase_start_timestamp_seconds > 7200)
+            unless on(namespace, name)
+            kuo_kubernetesupgrade_phase_info{phase=~"Complete|Failed|Paused"}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "KubernetesUpgrade {{ $labels.namespace }}/{{ $labels.name }} has been in one phase for over 2h"
+            description: >-
+              The upgrade has not changed phase in a long time. On a large
+              fleet WorkersUpgrade can legitimately run for hours, so treat
+              7200s as a starting point and tune it per environment. If it
+              is genuinely stuck, look for a control-plane precheck that
+              never passes, a drain blocked indefinitely by a
+              PodDisruptionBudget, or an executor Job stuck retrying.
+
+        - alert: UpgradeExecutorJobsFailing
+          expr: sum(rate(kuo_executor_job_total{outcome="failed"}[15m])) by (provider, kind) > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.provider }} {{ $labels.kind }} executor Jobs are failing"
+            description: >-
+              The privileged, node-pinned Jobs this operator uses to
+              actually mutate/read host state (see SECURITY.md) have been
+              failing for 10m. No upgrade for this provider can make
+              progress while this persists. Inspect a recent failed Job's
+              pod logs in the executor namespace for the specific error.
+
+        - alert: EtcdQuorumCheckFailing
+          # The for: clause is load-bearing - a real apiserver restart
+          # during a control-plane upgrade produces a ~30s blip here that
+          # is entirely normal. 10m sustained is not.
+          expr: kuo_etcd_quorum_healthy == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "etcd quorum check ({{ $labels.method }}) has reported unhealthy for 10m"
+            description: >-
+              A control-plane upgrade will not proceed past this gate while
+              it fails, and a sustained failure may mean genuine etcd
+              trouble rather than a transient. Check etcd pod health and
+              member list on the control-plane nodes directly.
+
+        - alert: UpgradeLeaseStuck
+          # Compound on purpose: a stale lease timestamp only matters if an
+          # upgrade is actually in progress (the plain Gauge holds its last
+          # value between upgrades).
+          expr: |
+            (time() - kuo_upgrade_lease_acquired_timestamp_seconds > 3600)
+            and on() (count(kuo_kubernetesupgrade_phase_info) > 0)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The cluster-wide upgrade lease has been held for over 1h with an upgrade in progress"
+            description: >-
+              A single upgrade holding the mutual-exclusion lease this long
+              suggests it is stuck (see KubernetesUpgradeStalled) or that
+              the lease release/finalizer path has broken. No other
+              KubernetesUpgrade can start until it is released.
+
+        - alert: UpgradeAdapterOperationsErroring
+          expr: sum(rate(kuo_adapter_operation_total{outcome="error"}[15m])) by (provider, operation) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.provider }} adapter {{ $labels.operation }} calls have been erroring for 15m"
+            description: >-
+              Lower-signal than UpgradeExecutorJobsFailing (adapter errors
+              usually also surface there or as a stalled phase), but a
+              sustained rate points at a provider-integration problem -
+              cloud API reachability, credentials, or a bug in the adapter.

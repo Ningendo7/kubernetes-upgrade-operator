@@ -51,6 +51,17 @@ var (
 	// widening capabilities cluster-node-wide. Unset by default: this is a
 	// host-specific accommodation, not a general requirement.
 	ContainerdSocketGID *int64
+
+	// AllowUnpinnedChecksums, when true, lets an upgrade proceed for a
+	// version that has no entry in pkg/checksums - the executor script
+	// then falls back to verifying against a checksum fetched alongside
+	// the binary from the same source, which is only an integrity check,
+	// not an authenticity one (see SECURITY.md). Off by default: an
+	// unpinned version is a hard failure, so adding support for a new
+	// version is a deliberate, reviewed change to the pinned table.
+	// Intended only for air-gapped setups pointing the *_BASE_URL vars at
+	// a mirror they have made their own trust decision about.
+	AllowUnpinnedChecksums = false
 )
 
 // SetExecutorImage overrides the default executor image.
@@ -68,6 +79,20 @@ func SetExecutorNamespace(ns string) {
 // socket. See the ContainerdSocketGID doc comment for why this exists.
 func SetContainerdSocketGID(gid int64) {
 	ContainerdSocketGID = &gid
+}
+
+// SetAllowUnpinnedChecksums toggles the fail-closed behaviour for a
+// version missing from the pinned checksum table. See the
+// AllowUnpinnedChecksums doc comment.
+func SetAllowUnpinnedChecksums(allow bool) {
+	AllowUnpinnedChecksums = allow
+}
+
+func boolEnv(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 const (
@@ -98,7 +123,16 @@ func jobNameFor(nodeName, targetVersion string) string {
 // "kubeadm upgrade apply" (run exactly once, on the first control-plane
 // node upgraded for a given hop) vs "kubeadm upgrade node" (every other
 // control-plane node, and all workers).
-func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job {
+// pinnedChecksums carries the SHA-256 values the executor script verifies
+// its fetches against. Zero values mean "not pinned" - only valid when
+// AllowUnpinnedChecksums is set, in which case the script falls back to a
+// fetch-alongside checksum.
+type pinnedChecksums struct {
+	kubeadm    string
+	kubeletDeb string
+}
+
+func buildUpgradeJob(nodeName, targetVersion string, useApply bool, sums pinnedChecksums) *batchv1.Job {
 	backoffLimit := int32(2)
 	ttl := int32(600)
 	activeDeadline := int64(900)
@@ -171,6 +205,18 @@ func buildUpgradeJob(nodeName, targetVersion string, useApply bool) *batchv1.Job
 								{
 									Name:  "UPGRADE_MODE",
 									Value: upgradeMode,
+								},
+								{
+									Name:  "KUBEADM_SHA256",
+									Value: sums.kubeadm,
+								},
+								{
+									Name:  "KUBELET_DEB_SHA256",
+									Value: sums.kubeletDeb,
+								},
+								{
+									Name:  "ALLOW_UNPINNED_CHECKSUMS",
+									Value: boolEnv(AllowUnpinnedChecksums),
 								},
 							},
 							SecurityContext: &corev1.SecurityContext{

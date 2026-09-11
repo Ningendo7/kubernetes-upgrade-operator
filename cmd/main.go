@@ -213,6 +213,11 @@ func main() {
 			kubeadm.SetContainerdSocketGID(gid)
 		}
 	}
+	if os.Getenv("ALLOW_UNPINNED_CHECKSUMS") == "true" {
+		setupLog.Info("ALLOW_UNPINNED_CHECKSUMS=true: upgrades to versions missing from the pinned checksum table " +
+			"will fall back to a fetch-alongside checksum (an integrity check, not an authenticity one)")
+		kubeadm.SetAllowUnpinnedChecksums(true)
+	}
 
 	if err := (&controller.KubernetesUpgradeReconciler{
 		Client:            mgr.GetClient(),

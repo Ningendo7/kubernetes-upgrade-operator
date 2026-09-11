@@ -59,7 +59,7 @@ func (r *KubernetesUpgradeReconciler) reconcileWorkersUpgrade(ctx context.Contex
 		case upgradev1alpha1.NGComplete:
 			continue
 		case upgradev1alpha1.NGFailed:
-			ku.Status.Phase = upgradev1alpha1.PhaseFailed
+			setKUPhase(ku, upgradev1alpha1.PhaseFailed)
 			ku.Status.Message = fmt.Sprintf("Worker group %q failed: %s", child.Name, child.Status.Message)
 			return ctrl.Result{}, r.Status().Update(ctx, ku)
 		default:
@@ -72,6 +72,6 @@ func (r *KubernetesUpgradeReconciler) reconcileWorkersUpgrade(ctx context.Contex
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	ku.Status.Phase = upgradev1alpha1.PhasePostchecks
+	setKUPhase(ku, upgradev1alpha1.PhasePostchecks)
 	return ctrl.Result{Requeue: true}, r.Status().Update(ctx, ku)
 }

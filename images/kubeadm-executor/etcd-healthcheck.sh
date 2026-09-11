@@ -4,6 +4,10 @@ set -eu
 : "${ETCD_VERSION:?ETCD_VERSION must be set}"
 
 export ETCD_VERSION
+# Pinned etcdctl tarball checksum from the manager (see pkg/checksums).
+# Empty means not pinned - only valid with ALLOW_UNPINNED_CHECKSUMS=true.
+export ETCDCTL_SHA256="${ETCDCTL_SHA256:-}"
+export ALLOW_UNPINNED_CHECKSUMS="${ALLOW_UNPINNED_CHECKSUMS:-false}"
 
 # Everything from here on runs against the HOST's own namespaces - its own
 # filesystem (for etcd's client certs) and network (for etcd's own client
@@ -23,11 +27,20 @@ TARBALL="etcd-${ETCD_VERSION}-linux-${ARCH}.tar.gz"
 
 echo "fetching etcdctl ${ETCD_VERSION} for linux/${ARCH}"
 curl -fsSL -o /tmp/etcd.tar.gz "${BASE_URL}/${ETCD_VERSION}/${TARBALL}"
-curl -fsSL -o /tmp/etcd.sha256sums "${BASE_URL}/${ETCD_VERSION}/SHA256SUMS"
 
-EXPECTED_SHA="$(grep " ${TARBALL}\$" /tmp/etcd.sha256sums | awk "{print \$1}")"
+EXPECTED_SHA="${ETCDCTL_SHA256}"
 if [ -z "${EXPECTED_SHA}" ]; then
-  echo "could not find a checksum for ${TARBALL} in SHA256SUMS" >&2
+  if [ "${ALLOW_UNPINNED_CHECKSUMS}" != "true" ]; then
+    echo "no pinned checksum for etcdctl ${ETCD_VERSION}; refusing an unverifiable fetch" >&2
+    exit 1
+  fi
+  echo "WARNING: etcdctl ${ETCD_VERSION} is not pinned; falling back to the SHA256SUMS served alongside the release" >&2
+  curl -fsSL -o /tmp/etcd.sha256sums "${BASE_URL}/${ETCD_VERSION}/SHA256SUMS"
+  EXPECTED_SHA="$(grep " ${TARBALL}\$" /tmp/etcd.sha256sums | awk "{print \$1}")"
+  rm -f /tmp/etcd.sha256sums
+fi
+if [ -z "${EXPECTED_SHA}" ]; then
+  echo "could not determine a checksum for ${TARBALL}" >&2
   exit 1
 fi
 echo "${EXPECTED_SHA}  /tmp/etcd.tar.gz" | sha256sum -c -
@@ -35,7 +48,7 @@ echo "${EXPECTED_SHA}  /tmp/etcd.tar.gz" | sha256sum -c -
 mkdir -p /tmp/etcd-extract
 tar --no-same-owner -xzf /tmp/etcd.tar.gz -C /tmp/etcd-extract --strip-components=1 "etcd-${ETCD_VERSION}-linux-${ARCH}/etcdctl"
 chmod 0755 /tmp/etcd-extract/etcdctl
-rm -f /tmp/etcd.tar.gz /tmp/etcd.sha256sums
+rm -f /tmp/etcd.tar.gz
 
 # Deliberately this nodes OWN local member only - never --cluster
 # cross-discovery from a single node, which would make the whole quorum

@@ -1,0 +1,22 @@
+# Grafana dashboard for the Kubernetes upgrade operator.
+#
+# Delivered as a ConfigMap labelled for the kube-prometheus-stack Grafana
+# sidecar to auto-import (the same stack the ServiceMonitor and
+# PrometheusRule under ../prometheus assume). If your Grafana is deployed
+# some other way, import config/grafana/dashboard.json by hand instead.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+configMapGenerator:
+  - name: kubernetes-upgrade-operator-dashboard
+    namespace: system
+    files:
+      - dashboard.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+      annotations:
+        grafana_folder: "Kubernetes Upgrade Operator"
+
+generatorOptions:
+  disableNameSuffixHash: true

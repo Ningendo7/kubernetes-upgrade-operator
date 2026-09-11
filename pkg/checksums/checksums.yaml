@@ -1,0 +1,64 @@
+# Pinned, known-good SHA-256 checksums for the artifacts the executor
+# Jobs fetch. Regenerate with hack/update-checksums.sh; review and commit.
+# DO NOT edit values by hand.
+versions:
+  v1.29.15:
+    amd64:
+      kubeadm: d0744fbaa1e67fc65c4a3409f083e01a4ede58181c759b2feeb08b1ef10d6201
+      kubelet_deb: 4eb32327d2eaf1b39c0587a5d779462025d2c339b896600c70065f93a14e3fab
+    arm64:
+      kubeadm: 5f34cc54cf72426d05f9f10015446fb02dfc8c60c15f4dd8a80eff07d65f054e
+      kubelet_deb: 4d1f8cc9697af5cdd3e00a35b00740b547530c72cd54ba92b21b1847ceba297a
+  v1.30.0:
+    amd64:
+      kubeadm: 29f4232c50e6524abba3443ff3b9948d386964d79eb8dfefb409e1f8a8434c14
+      kubelet_deb: 354ac13c246594bbc038145e4165afa4ce4a7dc0b84ccf8033a5daaf33c7273e
+    arm64:
+      kubeadm: c36afd28921303e6db8e58274de16c60a80a1e75030fc3c4e9c4ed6249b6b696
+      kubelet_deb: 2a86a6285aff215bab93e9820477282f8129144eea901e9a60de7e27d944ee2a
+  v1.30.14:
+    amd64:
+      kubeadm: bf1f8af81af8ecf003cbc03a8700c6e94a74c183ee092bbc77b92270ada2be70
+      kubelet_deb: f3df3226d45fe2d0e412e62d296e1079fe8aa0b88921372bfa5b8ef042ff8457
+    arm64:
+      kubeadm: 8020618ad265918cbf0268afda624923587ac5d7545848a3029a77f6322093e4
+      kubelet_deb: ac0a980e6b3f695a095943ada7d20992119c0400d16528b8e395d8b3c81efc32
+  v1.31.0:
+    amd64:
+      kubeadm: cf3b1a44b11ab226e40610e63d99fae7588a82940bb77da471a6dec624c819c2
+      kubelet_deb: 10c08d22d1c5bcb457ae2210a96a079cd501d4a079acca0ebcfddefca01c48fb
+    arm64:
+      kubeadm: dbeb84862d844d58f67ad6be64021681a314cda162a04e6047f376f2a9ad0226
+      kubelet_deb: 18597b14409bba4484ac34a550cbf4fdd48515c2ae805359c9f7d3f31620a0a8
+  v1.31.9:
+    amd64:
+      kubeadm: 9653845e48754df94842cce1ef76874e7f4c1a32d782dd0c7e6cf12e3a718dde
+      kubelet_deb: 03d24754d9a3c7d2f4ee1f8b1f574fa64a2d3bcec6dabe08f6abd019aeba2060
+    arm64:
+      kubeadm: d8f5dbb17ce2dead6aedcc700e4293a9395e246079fcdc1772ab9e5cbfeca906
+      kubelet_deb: d40b7a1b4adc76258972059f4a30ecc9110ce47f52705eaa4a1cf52deb7de8dd
+  v1.31.14:
+    amd64:
+      kubeadm: 6358aae72b191842b95f0b3a805a5470841c80d6b2e29990afc6624e4840e316
+      kubelet_deb: 9d3192da6f36dff2912c0e3e48778380f91e139bb15feadfb18424218f52a130
+    arm64:
+      kubeadm: ff9d9351423fd9c7b40a39a9be11df077b1f5a40c85b70349ca0ce55cd4fd336
+      kubelet_deb: 579ec48cda2d28db90c7d20640f5824df2e8b7d3bea696b9e1ee69347a836588
+  v1.32.13:
+    amd64:
+      kubeadm: 9060bc1257ac219cab0a91d66842cac5b9213f5c3159a5cf4aea674e73edd05c
+      kubelet_deb: 43d9b4c2ee0595926b38adde6a58b5ff3fdc14a154fa6461a041a91ad65dbe18
+    arm64:
+      kubeadm: 53d7235bb72f25af3613b383600e89b5fd20a902a976a29218f9c4bd1ba08316
+      kubelet_deb: be920da578466116dd37b74b2942dba03a3260b18d86b2dedbabdf460523744c
+etcd:
+  v3.5.16:
+    amd64:
+      etcdctl_tarball: b414b27a5ad05f7cb01395c447c85d3227e3fb1c176e51757a283b817f645ccc
+    arm64:
+      etcdctl_tarball: 8e68c55e6d72b791a9e98591c755af36f6f55aa9eca63767822cd8a3817fdb23
+  v3.5.24:
+    amd64:
+      etcdctl_tarball: 042497e2ddcee06f22e5d486d81f58affa26b53ee423e2a6aaca3d3ea98c8191
+    arm64:
+      etcdctl_tarball: efc01f6b3fbef0f000cb53bcad4845c116d7fdd8769ca39d9c40d2fe4d2e509f

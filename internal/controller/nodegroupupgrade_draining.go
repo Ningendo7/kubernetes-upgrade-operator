@@ -30,6 +30,7 @@ import (
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
+	obs "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/observability"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/upgrade"
 )
 
@@ -80,6 +81,12 @@ func (r *NodeGroupUpgradeReconciler) reconcileDraining(ctx context.Context, ng *
 		result, err := k8sutil.DrainNode(ctx, r.Client, name, drainOpts)
 		if err != nil {
 			return ctrl.Result{}, fmt.Errorf("draining node %q: %w", name, err)
+		}
+
+		for range result.Blocked() {
+			obs.DrainBlockedTotal.WithLabelValues(
+				ng.Namespace, ng.Labels[groupLabelKey], string(ng.Spec.Provider),
+			).Inc()
 		}
 
 		if result.Remaining() == 0 {

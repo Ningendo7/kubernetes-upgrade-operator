@@ -79,7 +79,7 @@ func (r *KubernetesUpgradeReconciler) reconcilePostchecks(ctx context.Context, k
 		if cmp < 0 {
 			log.Info("group has not yet reached this hops target, continuing",
 				"group", group.Name, "current", current, "target", hopTarget)
-			ku.Status.Phase = upgradev1alpha1.PhaseDiscovering
+			setKUPhase(ku, upgradev1alpha1.PhaseDiscovering)
 			return ctrl.Result{Requeue: true}, r.Status().Update(ctx, ku)
 		}
 	}
@@ -89,11 +89,11 @@ func (r *KubernetesUpgradeReconciler) reconcilePostchecks(ctx context.Context, k
 
 	if int(ku.Status.CurrentStepIndex)+1 < len(ku.Status.StepPlan) {
 		ku.Status.CurrentStepIndex++
-		ku.Status.Phase = upgradev1alpha1.PhaseDiscovering
+		setKUPhase(ku, upgradev1alpha1.PhaseDiscovering)
 		return ctrl.Result{Requeue: true}, r.Status().Update(ctx, ku)
 	}
 
-	ku.Status.Phase = upgradev1alpha1.PhaseComplete
+	setKUPhase(ku, upgradev1alpha1.PhaseComplete)
 	ku.Status.Message = fmt.Sprintf("upgraded to %s", ku.Spec.TargetVersion)
 	return ctrl.Result{}, r.Status().Update(ctx, ku)
 }

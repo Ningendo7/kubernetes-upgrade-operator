@@ -43,7 +43,7 @@ func (r *KubernetesUpgradeReconciler) reconcileControlPlaneUpgrade(ctx context.C
 			// Shouldn't normally happen - Prechecks only routes here when a
 			// control-plane group was discovered - but don't get stuck.
 			log.Info("no control-plane NodeGroupUpgrade found, skipping to WorkersUpgrade")
-			ku.Status.Phase = upgradev1alpha1.PhaseWorkersUpgrade
+			setKUPhase(ku, upgradev1alpha1.PhaseWorkersUpgrade)
 			return ctrl.Result{Requeue: true}, r.Status().Update(ctx, ku)
 		}
 		return ctrl.Result{}, fmt.Errorf("getting control-plane NodeGroupUpgrade: %w", err)
@@ -62,10 +62,10 @@ func (r *KubernetesUpgradeReconciler) reconcileControlPlaneUpgrade(ctx context.C
 
 	switch child.Status.Phase {
 	case upgradev1alpha1.NGComplete:
-		ku.Status.Phase = upgradev1alpha1.PhaseWorkersUpgrade
+		setKUPhase(ku, upgradev1alpha1.PhaseWorkersUpgrade)
 		return ctrl.Result{Requeue: true}, r.Status().Update(ctx, ku)
 	case upgradev1alpha1.NGFailed:
-		ku.Status.Phase = upgradev1alpha1.PhaseFailed
+		setKUPhase(ku, upgradev1alpha1.PhaseFailed)
 		ku.Status.Message = fmt.Sprintf("control-plane upgrade failed: %s", child.Status.Message)
 		return ctrl.Result{}, r.Status().Update(ctx, ku)
 	default:

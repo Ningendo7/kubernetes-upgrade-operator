@@ -93,7 +93,10 @@ func TestAdapter_InPlace_DelegatesToKubeadmExecutor(t *testing.T) {
 	a := &Adapter{inPlace: &kubeadm.Adapter{}}
 	group := &upgradev1alpha1.NodeGroupUpgrade{Spec: upgradev1alpha1.NodeGroupUpgradeSpec{Strategy: upgradev1alpha1.StrategyInPlace, Role: upgradev1alpha1.RoleWorker}}
 	uc := provider.UpgradeContext{Client: c, Group: group, TargetVersion: "v1.30.0"}
-	batch := []corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "worker-1"}}}
+	batch := []corev1.Node{{
+		ObjectMeta: metav1.ObjectMeta{Name: "worker-1"},
+		Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{Architecture: "amd64"}},
+	}}
 
 	if err := a.BeginBatch(context.Background(), uc, batch); err != nil {
 		t.Fatalf("BeginBatch: %v", err)

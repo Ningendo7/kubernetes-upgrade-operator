@@ -74,7 +74,7 @@ func (r *KubernetesUpgradeReconciler) reconcileDiscovering(ctx context.Context, 
 		allowDowngrade := ku.Spec.Safety != nil && ku.Spec.Safety.AllowDowngrade
 		steps, err := upgrade.ComputeStepPlan(startingVersion, ku.Spec.TargetVersion, allowDowngrade)
 		if err != nil {
-			ku.Status.Phase = upgradev1alpha1.PhaseFailed
+			setKUPhase(ku, upgradev1alpha1.PhaseFailed)
 			ku.Status.Message = err.Error()
 			return ctrl.Result{}, r.Status().Update(ctx, ku)
 		}
@@ -84,7 +84,7 @@ func (r *KubernetesUpgradeReconciler) reconcileDiscovering(ctx context.Context, 
 		ku.Status.CurrentStepIndex = 0
 
 		if len(steps) == 0 {
-			ku.Status.Phase = upgradev1alpha1.PhaseComplete
+			setKUPhase(ku, upgradev1alpha1.PhaseComplete)
 			ku.Status.Message = "cluster is already at the target version"
 			return ctrl.Result{}, r.Status().Update(ctx, ku)
 		}
@@ -183,7 +183,7 @@ func (r *KubernetesUpgradeReconciler) reconcileDiscovering(ctx context.Context, 
 	}
 
 	ku.Status.DiscoveredGroups = discovered
-	ku.Status.Phase = upgradev1alpha1.PhasePrechecks
+	setKUPhase(ku, upgradev1alpha1.PhasePrechecks)
 	if err := r.Status().Update(ctx, ku); err != nil {
 		return ctrl.Result{}, err
 	}

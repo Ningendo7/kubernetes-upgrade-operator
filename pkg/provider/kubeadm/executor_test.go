@@ -23,27 +23,27 @@ import (
 )
 
 func TestBuildUpgradeJob_NodeNameSetDirectlyBypassesCordon(t *testing.T) {
-	job := buildUpgradeJob("worker-1", "v1.30.0", false)
+	job := buildUpgradeJob("worker-1", "v1.30.0", false, pinnedChecksums{})
 	if job.Spec.Template.Spec.NodeName != "worker-1" {
 		t.Fatalf("expected pod to be pinned via spec.nodeName, got %q", job.Spec.Template.Spec.NodeName)
 	}
 }
 
 func TestBuildUpgradeJob_Deterministic(t *testing.T) {
-	a := buildUpgradeJob("worker-1", "v1.30.0", false)
-	b := buildUpgradeJob("worker-1", "v1.30.0", false)
+	a := buildUpgradeJob("worker-1", "v1.30.0", false, pinnedChecksums{})
+	b := buildUpgradeJob("worker-1", "v1.30.0", false, pinnedChecksums{})
 	if a.Name != b.Name {
 		t.Fatalf("expected the same (node, version) to produce the same Job name, got %q and %q", a.Name, b.Name)
 	}
 
-	c := buildUpgradeJob("worker-2", "v1.30.0", false)
+	c := buildUpgradeJob("worker-2", "v1.30.0", false, pinnedChecksums{})
 	if a.Name == c.Name {
 		t.Fatalf("expected different nodes to produce different Job names")
 	}
 }
 
 func TestBuildUpgradeJob_HardenedHostAccess(t *testing.T) {
-	job := buildUpgradeJob("worker-1", "v1.30.0", false)
+	job := buildUpgradeJob("worker-1", "v1.30.0", false, pinnedChecksums{})
 	pod := job.Spec.Template.Spec
 	container := pod.Containers[0]
 
@@ -106,7 +106,7 @@ func TestBuildUpgradeJob_ContainerdSocketGID(t *testing.T) {
 
 	t.Run("unset by default", func(t *testing.T) {
 		ContainerdSocketGID = nil
-		job := buildUpgradeJob("worker-1", "v1.30.0", false)
+		job := buildUpgradeJob("worker-1", "v1.30.0", false, pinnedChecksums{})
 		if job.Spec.Template.Spec.SecurityContext != nil {
 			t.Errorf("expected no pod-level SecurityContext when unset, got %+v", job.Spec.Template.Spec.SecurityContext)
 		}
@@ -114,7 +114,7 @@ func TestBuildUpgradeJob_ContainerdSocketGID(t *testing.T) {
 
 	t.Run("added as a supplemental group when configured", func(t *testing.T) {
 		SetContainerdSocketGID(1000)
-		job := buildUpgradeJob("worker-1", "v1.30.0", false)
+		job := buildUpgradeJob("worker-1", "v1.30.0", false, pinnedChecksums{})
 		sc := job.Spec.Template.Spec.SecurityContext
 		if sc == nil || len(sc.SupplementalGroups) != 1 || sc.SupplementalGroups[0] != 1000 {
 			t.Errorf("expected SupplementalGroups [1000], got %+v", sc)
@@ -132,8 +132,8 @@ func containsCapability(caps []corev1.Capability, want corev1.Capability) bool {
 }
 
 func TestBuildUpgradeJob_ApplyVsNodeCommandSelection(t *testing.T) {
-	applyJob := buildUpgradeJob("cp-1", "v1.30.0", true)
-	nodeJob := buildUpgradeJob("cp-2", "v1.30.0", false)
+	applyJob := buildUpgradeJob("cp-1", "v1.30.0", true, pinnedChecksums{})
+	nodeJob := buildUpgradeJob("cp-2", "v1.30.0", false, pinnedChecksums{})
 
 	if mode := envValue(applyJob.Spec.Template.Spec.Containers[0], "UPGRADE_MODE"); mode != "apply" {
 		t.Errorf("expected THE first control-plane node's Job  to set UPGRADE_MODE=apply, got: %s", mode)

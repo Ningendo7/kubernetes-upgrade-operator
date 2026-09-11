@@ -10,6 +10,14 @@ case "${UPGRADE_MODE}" in
 esac
 
 export TARGET_VERSION UPGRADE_MODE
+# The manager passes pinned SHA-256 values for the artifacts fetched below
+# (see pkg/checksums). Empty means "not pinned" - only allowed when
+# ALLOW_UNPINNED_CHECKSUMS=true, in which case we fall back to a checksum
+# fetched alongside the artifact, which is an integrity check only, not an
+# authenticity one (see SECURITY.md).
+export KUBEADM_SHA256="${KUBEADM_SHA256:-}"
+export KUBELET_DEB_SHA256="${KUBELET_DEB_SHA256:-}"
+export ALLOW_UNPINNED_CHECKSUMS="${ALLOW_UNPINNED_CHECKSUMS:-false}"
 
 # Everything from here on runs against the HOST's own namespaces - its own
 # filesystem, network, and binaries (curl, apt-get/dnf, kubeadm, systemctl),
@@ -28,10 +36,19 @@ BASE_URL="${KUBEADM_RELEASE_BASE_URL:-https://dl.k8s.io/release}"
 
 echo "fetching kubeadm ${TARGET_VERSION} for linux/${ARCH}"
 curl -fsSL -o /tmp/kubeadm.new "${BASE_URL}/${TARGET_VERSION}/bin/linux/${ARCH}/kubeadm"
-curl -fsSL -o /tmp/kubeadm.new.sha256 "${BASE_URL}/${TARGET_VERSION}/bin/linux/${ARCH}/kubeadm.sha256"
-echo "$(cat /tmp/kubeadm.new.sha256)  /tmp/kubeadm.new" | sha256sum -c -
+
+EXPECTED_KUBEADM_SHA="${KUBEADM_SHA256}"
+if [ -z "${EXPECTED_KUBEADM_SHA}" ]; then
+  if [ "${ALLOW_UNPINNED_CHECKSUMS}" != "true" ]; then
+    echo "no pinned checksum for kubeadm ${TARGET_VERSION}; refusing an unverifiable fetch" >&2
+    exit 1
+  fi
+  echo "WARNING: kubeadm ${TARGET_VERSION} is not in the pinned checksum table; falling back to the checksum served alongside the binary" >&2
+  EXPECTED_KUBEADM_SHA="$(curl -fsSL "${BASE_URL}/${TARGET_VERSION}/bin/linux/${ARCH}/kubeadm.sha256")"
+fi
+echo "${EXPECTED_KUBEADM_SHA}  /tmp/kubeadm.new" | sha256sum -c -
 install -m 0755 /tmp/kubeadm.new /usr/bin/kubeadm
-rm -f /tmp/kubeadm.new /tmp/kubeadm.new.sha256
+rm -f /tmp/kubeadm.new
 
 KUBE_VERSION="${TARGET_VERSION#v}"
 
@@ -89,9 +106,19 @@ if command -v dpkg >/dev/null 2>&1; then
     exit 1
   fi
   DEB_PATH="${RESULT%% *}"
-  DEB_SHA256="${RESULT##* }"
+  INDEX_DEB_SHA256="${RESULT##* }"
+
+  EXPECTED_KUBELET_DEB_SHA="${KUBELET_DEB_SHA256}"
+  if [ -z "${EXPECTED_KUBELET_DEB_SHA}" ]; then
+    if [ "${ALLOW_UNPINNED_CHECKSUMS}" != "true" ]; then
+      echo "no pinned checksum for the kubelet ${KUBE_VERSION} package; refusing an unverifiable fetch" >&2
+      exit 1
+    fi
+    echo "WARNING: kubelet ${KUBE_VERSION} package is not pinned; falling back to the checksum from the package index" >&2
+    EXPECTED_KUBELET_DEB_SHA="${INDEX_DEB_SHA256}"
+  fi
   curl -fsSL -o /tmp/kubelet.new.deb "${DEB_BASE_URL}/${DEB_PATH}"
-  echo "${DEB_SHA256}  /tmp/kubelet.new.deb" | sha256sum -c -
+  echo "${EXPECTED_KUBELET_DEB_SHA}  /tmp/kubelet.new.deb" | sha256sum -c -
 
   # dpkg -i does not resolve dependencies the way apt-get normally would -
   # a host whose kubelet was never installed with real apt dependency

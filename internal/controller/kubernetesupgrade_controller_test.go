@@ -267,7 +267,7 @@ var _ = Describe("KubernetesUpgrade Controller", func() {
 			testNodes := []*corev1.Node{cpNode, laggingWorker}
 
 			statuses := map[string]string{
-				cpNode.Name:        serverVersion.GitVersion,               // already caught up: v(minor)
+				cpNode.Name:        serverVersion.GitVersion,                // already caught up: v(minor)
 				laggingWorker.Name: fmt.Sprintf("v%d.%d.0", major, minor-2), // two minors behind
 			}
 			for _, n := range testNodes {
@@ -463,7 +463,7 @@ var _ = Describe("KubernetesUpgrade Controller", func() {
 			testNodes := []*corev1.Node{cpNode, laggingWorker}
 
 			statuses := map[string]string{
-				cpNode.Name:        targetVersion,                          // already fully done
+				cpNode.Name:        targetVersion,                           // already fully done
 				laggingWorker.Name: fmt.Sprintf("v%d.%d.0", major, minor-2), // needs multiple hops
 			}
 			for _, n := range testNodes {

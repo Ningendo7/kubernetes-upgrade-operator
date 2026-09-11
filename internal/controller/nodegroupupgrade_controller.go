@@ -68,6 +68,8 @@ func (r *NodeGroupUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
+	recordNodeGroupPhaseCounts(&ng)
+
 	if changed := setNGPausedCondition(&ng); changed {
 		if err := r.Status().Update(ctx, &ng); err != nil {
 			return ctrl.Result{}, err

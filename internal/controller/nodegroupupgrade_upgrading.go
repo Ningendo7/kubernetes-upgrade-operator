@@ -29,6 +29,7 @@ import (
 
 	upgradev1alpha1 "github.com/Ningendo7/kubernetes-upgrade-operator/api/v1alpha1"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/k8sutil"
+	obs "github.com/Ningendo7/kubernetes-upgrade-operator/pkg/observability"
 	"github.com/Ningendo7/kubernetes-upgrade-operator/pkg/provider"
 )
 
@@ -141,9 +142,13 @@ func (r *NodeGroupUpgradeReconciler) reconcileUpgrading(ctx context.Context, ng 
 		if idx == -1 {
 			continue
 		}
+		wasTerminal := ng.Status.NodeProgress[idx].Phase == "Upgraded" || ng.Status.NodeProgress[idx].Phase == "Failed"
 		switch res.Phase {
 		case provider.NodePhaseUpgraded:
 			ng.Status.NodeProgress[idx].Phase = "Upgraded"
+			if !wasTerminal {
+				obs.ExecutorJobTotal.WithLabelValues(string(ng.Spec.Provider), "upgrade", "succeeded").Inc()
+			}
 		case provider.NodePhaseFailed:
 			msg := "upgrade failed"
 			if res.Error != nil {
@@ -151,6 +156,9 @@ func (r *NodeGroupUpgradeReconciler) reconcileUpgrading(ctx context.Context, ng 
 			}
 			ng.Status.NodeProgress[idx].Phase = "Failed"
 			ng.Status.NodeProgress[idx].Error = msg
+			if !wasTerminal {
+				obs.ExecutorJobTotal.WithLabelValues(string(ng.Spec.Provider), "upgrade", "failed").Inc()
+			}
 			ng.Status.Phase = upgradev1alpha1.NGFailed
 			ng.Status.Message = fmt.Sprintf("node %q failed to upgrade: %s", res.NodeName, msg)
 			return ctrl.Result{}, r.Status().Update(ctx, ng)

@@ -36,11 +36,14 @@ func NewRegistry() *Registry {
 	}
 }
 
-// Register makes an adapter available under its own Type().
+// Register makes an adapter available under its own Type(). The adapter
+// is wrapped for metrics instrumentation on the way in (see
+// instrumentedAdapter) - every adapter, including fakes registered by
+// tests, so a new provider is instrumented the moment it registers.
 func (r *Registry) Register(a Adapter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.adapters[a.Type()] = a
+	r.adapters[a.Type()] = instrument(a)
 }
 
 // Get looks up the adapter registered for a provider type.
